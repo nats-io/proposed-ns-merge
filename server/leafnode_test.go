@@ -5357,11 +5357,26 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 		rsubs = append(rsubs, sub)
 	}
 
+	// Create a second unique DQ with 10 additional subscribers.
+	var rsubs2 = []*nats.Subscription{}
+
+	for i := 0; i < 10; i++ {
+		nc, _ := jsClientConnect(t, ln.randomServer())
+		defer nc.Close()
+		sub, err := nc.QueueSubscribeSync("RESPONSE", "SA2")
+		require_NoError(t, err)
+		nc.Flush()
+		rsubs = append(rsubs2, sub)
+	}
+
 	nc, _ = jsClientConnect(t, ln.randomServer())
 	defer nc.Close()
 	_, err := nc.SubscribeSync("RESPONSE")
 	require_NoError(t, err)
 	nc.Flush()
+
+	// sub propogation
+	time.Sleep(200 * time.Millisecond)
 
 	// Now connect and send responses from EFG in cloud.
 	nc, _ = jsClientConnect(t, sc.randomServer(), nats.UserInfo("efg", "p"))
@@ -5374,10 +5389,21 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 	checkAllRespReceived := func() error {
 		p := pending(rsubs)
 		if p == 100 {
+			t.Logf("All responses received by SA DQ [%d]", p)
 			return nil
 		}
-		return fmt.Errorf("Not all responses received: %d vs %d", p, 100)
+		return fmt.Errorf("Not all responses received by SA DQ: %d vs %d", p, 100)
+	}
+
+	checkAllRespReceived2 := func() error {
+		p := pending(rsubs2)
+		if p == 100 {
+			t.Logf("All responses received by SA2 DQ [%d]", p)
+			return nil
+		}
+		return fmt.Errorf("Not all responses received by SA2 DQ: %d vs %d", p, 100)
 	}
 
 	checkFor(t, time.Second, 200*time.Millisecond, checkAllRespReceived)
+	checkFor(t, time.Second, 200*time.Millisecond, checkAllRespReceived2)
 }
