@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/s2"
+
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nuid"
 )
@@ -694,12 +695,21 @@ func (jso jetStreamOption) IsStatszChange() bool {
 }
 
 type ocspOption struct {
-	noopOption
+	tlsOption
 	newValue *OCSPConfig
 }
 
 func (a *ocspOption) Apply(s *Server) {
 	s.Noticef("Reloaded: OCSP")
+}
+
+type ocspResponseCacheOption struct {
+	tlsOption
+	newValue *OCSPResponseCacheConfig
+}
+
+func (a *ocspResponseCacheOption) Apply(s *Server) {
+	s.Noticef("Reloaded OCSP peer cache")
 }
 
 // connectErrorReports implements the option interface for the `connect_error_reports`
@@ -1118,7 +1128,7 @@ func imposeOrder(value interface{}) error {
 		sort.Strings(value.AllowedOrigins)
 	case string, bool, uint8, int, int32, int64, time.Duration, float64, nil, LeafNodeOpts, ClusterOpts, *tls.Config, PinnedCertSet,
 		*URLAccResolver, *MemAccResolver, *DirAccResolver, *CacheDirAccResolver, Authentication, MQTTOpts, jwt.TagList,
-		*OCSPConfig, map[string]string, JSLimitOpts, StoreCipher:
+		*OCSPConfig, map[string]string, JSLimitOpts, StoreCipher, *OCSPResponseCacheConfig:
 		// explicitly skipped types
 	case *AuthCallout:
 	default:
@@ -1577,6 +1587,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			}
 		case "ocspconfig":
 			diffOpts = append(diffOpts, &ocspOption{newValue: newValue.(*OCSPConfig)})
+		case "ocspcacheconfig":
+			diffOpts = append(diffOpts, &ocspResponseCacheOption{newValue: newValue.(*OCSPResponseCacheConfig)})
 		default:
 			// TODO(ik): Implement String() on those options to have a nice print.
 			// %v is difficult to figure what's what, %+v print private fields and
@@ -1724,10 +1736,12 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		s.updateRemoteLeafNodesTLSConfig(newOpts)
 	}
 
+	// This will fire if TLS enabled at root (NATS listener) -or- if ocsp or ocsp_cache
+	// appear in the config.
 	if reloadTLS {
 		// Restart OCSP monitoring.
 		if err := s.reloadOCSP(); err != nil {
-			s.Warnf("Can't restart OCSP Stapling: %v", err)
+			s.Warnf("Can't restart OCSP features: %v", err)
 		}
 	}
 
