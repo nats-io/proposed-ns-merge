@@ -16,7 +16,7 @@ package test
 import (
 	"bytes"
 	"context"
-	"crypto/rsa"
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -32,9 +32,10 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/ocsp"
+
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
-	"golang.org/x/crypto/ocsp"
 )
 
 func TestOCSPAlwaysMustStapleAndShutdown(t *testing.T) {
@@ -2302,7 +2303,7 @@ func TestOCSPGatewayIntermediate(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ocspr := newOCSPResponderDesignated(t, caCert, caIntermCert, caIntermKey, true)
+	ocspr := newOCSPResponderDesignated(t, caCert, caIntermCert, caIntermKey, true, "127.0.0.1:8888")
 	defer ocspr.Shutdown(ctx)
 
 	addr := fmt.Sprintf("http://%s", ocspr.Addr)
@@ -2863,10 +2864,10 @@ func TestOCSPCustomConfigReloadEnable(t *testing.T) {
 
 func newOCSPResponder(t *testing.T, issuerCertPEM, issuerKeyPEM string) *http.Server {
 	t.Helper()
-	return newOCSPResponderDesignated(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false)
+	return newOCSPResponderDesignated(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false, "127.0.0.1:8888")
 }
 
-func newOCSPResponderDesignated(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM string, embed bool) *http.Server {
+func newOCSPResponderDesignated(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM string, embed bool, addr string) *http.Server {
 	t.Helper()
 	var mu sync.Mutex
 	status := make(map[string]int)
@@ -2965,7 +2966,7 @@ func newOCSPResponderDesignated(t *testing.T, issuerCertPEM, respCertPEM, respKe
 	})
 
 	srv := &http.Server{
-		Addr:    "127.0.0.1:8888",
+		Addr:    addr,
 		Handler: mux,
 	}
 	go srv.ListenAndServe()
@@ -3011,15 +3012,19 @@ func parseCertPEM(t *testing.T, certPEM string) *x509.Certificate {
 	return cert
 }
 
-func parseKeyPEM(t *testing.T, keyPEM string) *rsa.PrivateKey {
+func parseKeyPEM(t *testing.T, keyPEM string) crypto.Signer {
 	t.Helper()
 	block := parsePEM(t, keyPEM)
 
-	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		t.Fatalf("failed to parse ikey %s: %s", keyPEM, err)
+		key, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			t.Fatalf("failed to parse ikey %s: %s", keyPEM, err)
+		}
 	}
-	return key
+	keyc := key.(crypto.Signer)
+	return keyc
 }
 
 func parsePEM(t *testing.T, pemPath string) *pem.Block {

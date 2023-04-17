@@ -222,6 +222,8 @@ type tlsOption struct {
 	newValue *tls.Config
 }
 
+// TODO(tgb): implement reload for ocsp_check_peer and ocsp_timeout
+
 // Apply the tls change.
 func (t *tlsOption) Apply(server *Server) {
 	server.mu.Lock()

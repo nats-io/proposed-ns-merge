@@ -27,13 +27,12 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
-	"regexp"
-
 	// Allow dynamic profiling.
 	_ "net/http/pprof"
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -1963,8 +1962,12 @@ func (s *Server) Start() {
 		}
 	}
 
-	// Start OCSP Stapling monitoring for TLS certificates if enabled.
+	// Start OCSP Stapling monitoring for TLS certificates if enabled. Hook TLS handshake for
+	// OCSP check on peers (LEAF and CLIENT kind) if enabled.
 	s.startOCSPMonitoring()
+
+	// Configure OCSP Response Cache for peer OCSP checks if enabled.
+	s.initOCSPResponseCache()
 
 	// Start up gateway if needed. Do this before starting the routes, because
 	// we want to resolve the gateway host:port so that this information can

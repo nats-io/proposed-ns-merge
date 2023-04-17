@@ -581,21 +581,24 @@ type authorization struct {
 // TLSConfigOpts holds the parsed tls config information,
 // used with flag parsing
 type TLSConfigOpts struct {
-	CertFile          string
-	KeyFile           string
-	CaFile            string
-	Verify            bool
-	Insecure          bool
-	Map               bool
-	TLSCheckKnownURLs bool
-	Timeout           float64
-	RateLimit         int64
-	Ciphers           []uint16
-	CurvePreferences  []tls.CurveID
-	PinnedCerts       PinnedCertSet
-	CertStore         certstore.StoreType
-	CertMatchBy       certstore.MatchByType
-	CertMatch         string
+	CertFile                string
+	KeyFile                 string
+	CaFile                  string
+	Verify                  bool
+	Insecure                bool
+	Map                     bool
+	TLSCheckKnownURLs       bool
+	Timeout                 float64
+	RateLimit               int64
+	Ciphers                 []uint16
+	CurvePreferences        []tls.CurveID
+	PinnedCerts             PinnedCertSet
+	CertStore               certstore.StoreType
+	CertMatchBy             certstore.MatchByType
+	CertMatch               string
+	VerifyPeerConn          bool
+	VerifyPeerConnTimeout   float64
+	VerifyPeerConnClockSkew float64
 }
 
 // OCSPConfig represents the options of OCSP stapling options.
@@ -3958,7 +3961,7 @@ func PrintTLSHelpAndDie() {
 		fmt.Printf("    %s\n", k)
 	}
 	if runtime.GOOS == "windows" {
-		fmt.Printf("%s", certstore.Usage)
+		fmt.Printf("%s\n", certstore.Usage)
 	}
 	os.Exit(0)
 }
@@ -4143,6 +4146,46 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 				return nil, &configErr{tk, certstore.ErrBadCertMatchField.Error()}
 			}
 			tc.CertMatch = certMatch
+		case "verify_peer_conn":
+			verifyPeerConn, ok := mv.(bool)
+			if !ok {
+				return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, unknown field [%q]", mk)}
+			}
+			tc.VerifyPeerConn = verifyPeerConn
+		case "verify_peer_conn_timeout":
+			at := float64(0)
+			switch mv := mv.(type) {
+			case int64:
+				at = float64(mv)
+			case float64:
+				at = mv
+			case string:
+				d, err := time.ParseDuration(mv)
+				if err != nil {
+					return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, 'verify_peer_conn_timeout' %s", err)}
+				}
+				at = d.Seconds()
+			default:
+				return nil, &configErr{tk, "error parsing tls config, 'verify_peer_conn_timeout' wrong type"}
+			}
+			tc.VerifyPeerConnTimeout = at
+		case "verify_peer_conn_clockskew":
+			at := float64(0)
+			switch mv := mv.(type) {
+			case int64:
+				at = float64(mv)
+			case float64:
+				at = mv
+			case string:
+				d, err := time.ParseDuration(mv)
+				if err != nil {
+					return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, 'verify_peer_conn_clockskew' %s", err)}
+				}
+				at = d.Seconds()
+			default:
+				return nil, &configErr{tk, "error parsing tls config, 'verify_peer_conn_clockskew' wrong type"}
+			}
+			tc.VerifyPeerConnClockSkew = at
 		default:
 			return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, unknown field [%q]", mk)}
 		}

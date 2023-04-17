@@ -520,10 +520,11 @@ func (s *Server) setupOCSPStapleStoreDir() error {
 }
 
 type tlsConfigKind struct {
-	tlsConfig *tls.Config
-	tlsOpts   *TLSConfigOpts
-	kind      string
-	apply     func(*tls.Config)
+	tlsConfig   *tls.Config
+	tlsOpts     *TLSConfigOpts
+	kind        string
+	isLeafSpoke bool
+	apply       func(*tls.Config)
 }
 
 func (s *Server) configureOCSP() []*tlsConfigKind {
@@ -576,9 +577,10 @@ func (s *Server) configureOCSP() []*tlsConfigKind {
 			// in the apply func callback below.
 			r, opts := remote, remote.tlsConfigOpts
 			o := &tlsConfigKind{
-				kind:      kindStringMap[LEAF],
-				tlsConfig: config,
-				tlsOpts:   opts,
+				kind:        kindStringMap[LEAF],
+				tlsConfig:   config,
+				tlsOpts:     opts,
+				isLeafSpoke: true,
 				apply: func(tc *tls.Config) {
 					// We're a leaf client, so we must not set this.
 					tc.GetCertificate = nil
@@ -619,6 +621,8 @@ func (s *Server) enableOCSP() error {
 	configs := s.configureOCSP()
 
 	for _, config := range configs {
+
+		// OCSP Stapling feature, will also enable tls server peer check for gateway and route peers
 		tc, mon, err := s.NewOCSPMonitor(config)
 		if err != nil {
 			return err
@@ -627,8 +631,20 @@ func (s *Server) enableOCSP() error {
 		if mon != nil {
 			s.ocsps = append(s.ocsps, mon)
 
-			// Override the TLS config with one that follows OCSP.
+			// Override the TLS config with one that follows OCSP stapling
 			config.apply(tc)
+		}
+
+		// mTLS OCSP check (client, leaf) and tls server peer check for leaf remotes
+		if config.kind == kindStringMap[CLIENT] || config.kind == kindStringMap[LEAF] {
+			tc, plugged, err := s.plugTLSVerifyConn(config)
+			if err != nil {
+				return err
+			}
+			if plugged && tc != nil {
+				ocspPeerVerify = true
+				config.apply(tc)
+			}
 		}
 	}
 
@@ -668,6 +684,7 @@ func (s *Server) reloadOCSP() error {
 
 	configs := s.configureOCSP()
 
+	// TODO(tgb) Implement same as in enableOCSP() for mTLS OCSP (server validates client) plus Leaf spoke validating hub (client validates server)
 	// Restart the monitors under the new configuration.
 	ocspm := make([]*OCSPMonitor, 0)
 	for _, config := range configs {
