@@ -2659,9 +2659,11 @@ type JSzOptions struct {
 // HealthzOptions are options passed to Healthz
 type HealthzOptions struct {
 	// Deprecated: Use JSEnabledOnly instead
-	JSEnabled     bool `json:"js-enabled,omitempty"`
-	JSEnabledOnly bool `json:"js-enabled-only,omitempty"`
-	JSServerOnly  bool `json:"js-server-only,omitempty"`
+	JSEnabled     bool   `json:"js-enabled,omitempty"`
+	JSEnabledOnly bool   `json:"js-enabled-only,omitempty"`
+	JSServerOnly  bool   `json:"js-server-only,omitempty"`
+	Account       string `json:"account,omitempty"`
+	Stream        string `json:"stream,omitempty"`
 }
 
 // ProfilezOptions are options passed to Profilez
@@ -3050,6 +3052,8 @@ func (s *Server) HandleHealthz(w http.ResponseWriter, r *http.Request) {
 		JSEnabled:     jsEnabled,
 		JSEnabledOnly: jsEnabledOnly,
 		JSServerOnly:  jsServerOnly,
+		Account:       r.URL.Query().Get("account"),
+		Stream:        r.URL.Query().Get("stream"),
 	})
 	if hs.Error != _EMPTY_ {
 		s.Warnf("Healthcheck failed: %q", hs.Error)
@@ -3070,6 +3074,12 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 	// set option defaults
 	if opts == nil {
 		opts = &HealthzOptions{}
+	}
+
+	if opts.Account == "" && opts.Stream != "" {
+		health.Status = "error"
+		health.Error = fmt.Sprintf("Bad request: %q must not be empty when checking stream health", "account")
+		return health
 	}
 
 	if err := s.readyForConnections(time.Millisecond); err != nil {
@@ -3110,9 +3120,22 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		sdir := js.config.StoreDir
 		// Whip through account folders and pull each stream name.
 		fis, _ := os.ReadDir(sdir)
+		var accFound, streamFound bool
+		if opts.Account == "" {
+			accFound = true
+		}
+		if opts.Stream == "" {
+			streamFound = true
+		}
 		for _, fi := range fis {
 			if fi.Name() == snapStagingDir {
 				continue
+			}
+			if opts.Account != "" {
+				if fi.Name() != opts.Account {
+					continue
+				}
+				accFound = true
 			}
 			acc, err := s.LookupAccount(fi.Name())
 			if err != nil {
@@ -3122,6 +3145,12 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 			}
 			sfis, _ := os.ReadDir(filepath.Join(sdir, fi.Name(), "streams"))
 			for _, sfi := range sfis {
+				if opts.Stream != "" {
+					if sfi.Name() != opts.Stream {
+						continue
+					}
+					streamFound = true
+				}
 				stream := sfi.Name()
 				if _, err := acc.lookupStream(stream); err != nil {
 					health.Status = na
@@ -3129,6 +3158,14 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 					return health
 				}
 			}
+		}
+		if !accFound {
+			health.Status = na
+			health.Error = fmt.Sprintf("JetStream account %q not found", opts.Account)
+		}
+		if !streamFound {
+			health.Status = na
+			health.Error = fmt.Sprintf("JetStream stream %q not found on account %q", opts.Stream, opts.Account)
 		}
 		return health
 	}
@@ -3162,24 +3199,70 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 	ourID := meta.ID()
 
 	// Copy the meta layer so we do not need to hold the js read lock for an extended period of time.
+	var streams map[string]map[string]*streamAssignment
 	js.mu.RLock()
-	streams := make(map[string]map[string]*streamAssignment, len(cc.streams))
-	for acc, asa := range cc.streams {
+	if opts.Account == "" {
+		streams = make(map[string]map[string]*streamAssignment, len(cc.streams))
+		for acc, asa := range cc.streams {
+			nasa := make(map[string]*streamAssignment)
+			for stream, sa := range asa {
+				if sa.Group.isMember(ourID) {
+					csa := sa.copyGroup()
+					csa.consumers = make(map[string]*consumerAssignment)
+					for consumer, ca := range sa.consumers {
+						if ca.Group.isMember(ourID) {
+							// Use original here. Not a copy.
+						    csa.consumers[consumer] = ca
+						}
+					}
+					nasa[stream] = csa
+				}
+			}
+			streams[acc] = nasa
+		}
+	} else {
+		streams = make(map[string]map[string]*streamAssignment, 1)
+		asa, ok := cc.streams[opts.Account]
+		if !ok {
+			health.Status = na
+			health.Error = fmt.Sprintf("JetStream account %q not found", opts.Account)
+			js.mu.RUnlock()
+			return health
+		}
 		nasa := make(map[string]*streamAssignment)
-		for stream, sa := range asa {
+		if opts.Stream != "" {
+			sa, ok := asa[opts.Stream]
+			if !ok {
+				health.Status = na
+				health.Error = fmt.Sprintf("JetStream stream %q not found on account %q", opts.Stream, opts.Account)
+				js.mu.RUnlock()
+				return health
+			}
 			if sa.Group.isMember(ourID) {
 				csa := sa.copyGroup()
 				csa.consumers = make(map[string]*consumerAssignment)
 				for consumer, ca := range sa.consumers {
 					if ca.Group.isMember(ourID) {
-						// Use original here. Not a copy.
 						csa.consumers[consumer] = ca
 					}
 				}
-				nasa[stream] = csa
+				nasa[opts.Stream] = csa
+			}
+		} else {
+			for stream, sa := range asa {
+				if sa.Group.isMember(ourID) {
+					csa := sa.copyGroup()
+					csa.consumers = make(map[string]*consumerAssignment)
+					for consumer, ca := range sa.consumers {
+						if ca.Group.isMember(ourID) {
+							csa.consumers[consumer] = ca
+						}
+					}
+					nasa[stream] = csa
+				}
 			}
 		}
-		streams[acc] = nasa
+		streams[opts.Account] = nasa
 	}
 	js.mu.RUnlock()
 
