@@ -20,6 +20,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"math"
 	"net"
 	"net/url"
@@ -4470,6 +4471,15 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 		}
 		config.ClientCAs = pool
 	}
+
+	// TGB Temp patch for debugging handshake with wireshark
+	tmpDir := os.TempDir()
+	keyLogFile := filepath.Join(tmpDir, "nats-keylog.txt")
+	f, err := os.OpenFile(keyLogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		log.Panicf("unable to create nats-keylog.txt file: %v", err)
+	}
+	config.KeyLogWriter = f
 
 	return &config, nil
 }
