@@ -2664,6 +2664,7 @@ type HealthzOptions struct {
 	JSServerOnly  bool   `json:"js-server-only,omitempty"`
 	Account       string `json:"account,omitempty"`
 	Stream        string `json:"stream,omitempty"`
+	Consumer      string `json:"consumer,omitempty"`
 }
 
 // ProfilezOptions are options passed to Profilez
@@ -3054,6 +3055,7 @@ func (s *Server) HandleHealthz(w http.ResponseWriter, r *http.Request) {
 		JSServerOnly:  jsServerOnly,
 		Account:       r.URL.Query().Get("account"),
 		Stream:        r.URL.Query().Get("stream"),
+		Consumer:      r.URL.Query().Get("consumer"),
 	})
 	if hs.Error != _EMPTY_ {
 		s.Warnf("Healthcheck failed: %q", hs.Error)
@@ -3079,6 +3081,12 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 	if opts.Account == "" && opts.Stream != "" {
 		health.Status = "error"
 		health.Error = fmt.Sprintf("Bad request: %q must not be empty when checking stream health", "account")
+		return health
+	}
+
+	if opts.Stream == "" && opts.Consumer != "" {
+		health.Status = "error"
+		health.Error = fmt.Sprintf("Bad request: %q must not be empty when checking consumer health", "stream")
 		return health
 	}
 
@@ -3120,13 +3128,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		sdir := js.config.StoreDir
 		// Whip through account folders and pull each stream name.
 		fis, _ := os.ReadDir(sdir)
-		var accFound, streamFound bool
-		if opts.Account == "" {
-			accFound = true
-		}
-		if opts.Stream == "" {
-			streamFound = true
-		}
+		var accFound, streamFound, consumerFound bool
 		for _, fi := range fis {
 			if fi.Name() == snapStagingDir {
 				continue
@@ -3152,20 +3154,40 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 					streamFound = true
 				}
 				stream := sfi.Name()
-				if _, err := acc.lookupStream(stream); err != nil {
+				s, err := acc.lookupStream(stream)
+				if err != nil {
 					health.Status = na
 					health.Error = fmt.Sprintf("JetStream stream '%s > %s' could not be recovered", acc, stream)
 					return health
 				}
+				if streamFound {
+					// if consumer option is passed, verify that the consumer exists on stream
+					if opts.Consumer != "" {
+						for _, cons := range s.consumers {
+							if cons.name == opts.Consumer {
+								consumerFound = true
+								break
+							}
+						}
+					}
+					break
+				}
+			}
+			if accFound {
+				break
 			}
 		}
-		if !accFound {
+		if opts.Account != "" && !accFound {
 			health.Status = na
 			health.Error = fmt.Sprintf("JetStream account %q not found", opts.Account)
 		}
-		if !streamFound {
+		if opts.Stream != "" && !streamFound {
 			health.Status = na
 			health.Error = fmt.Sprintf("JetStream stream %q not found on account %q", opts.Stream, opts.Account)
+		}
+		if opts.Consumer != "" && !consumerFound {
+			health.Status = na
+			health.Error = fmt.Sprintf("JetStream consumer %q not found for stream %q on account %q", opts.Consumer, opts.Stream, opts.Account)
 		}
 		return health
 	}
@@ -3212,7 +3234,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 					for consumer, ca := range sa.consumers {
 						if ca.Group.isMember(ourID) {
 							// Use original here. Not a copy.
-						    csa.consumers[consumer] = ca
+							csa.consumers[consumer] = ca
 						}
 					}
 					nasa[stream] = csa
@@ -3232,22 +3254,36 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		nasa := make(map[string]*streamAssignment)
 		if opts.Stream != "" {
 			sa, ok := asa[opts.Stream]
-			if !ok {
+			if !ok || !sa.Group.isMember(ourID) {
 				health.Status = na
 				health.Error = fmt.Sprintf("JetStream stream %q not found on account %q", opts.Stream, opts.Account)
 				js.mu.RUnlock()
 				return health
 			}
-			if sa.Group.isMember(ourID) {
-				csa := sa.copyGroup()
-				csa.consumers = make(map[string]*consumerAssignment)
-				for consumer, ca := range sa.consumers {
-					if ca.Group.isMember(ourID) {
-						csa.consumers[consumer] = ca
+			csa := sa.copyGroup()
+			csa.consumers = make(map[string]*consumerAssignment)
+			var consumerFound bool
+			for consumer, ca := range sa.consumers {
+				if opts.Consumer != "" {
+					if consumer != opts.Consumer || !ca.Group.isMember(ourID) {
+						continue
 					}
+					consumerFound = true
 				}
-				nasa[opts.Stream] = csa
+				if ca.Group.isMember(ourID) {
+					csa.consumers[consumer] = ca
+				}
+				if consumerFound {
+					break
+				}
 			}
+			if opts.Consumer != "" && !consumerFound {
+				health.Status = na
+				health.Error = fmt.Sprintf("JetStream consumer %q not found for stream %q on account %q", opts.Consumer, opts.Stream, opts.Account)
+				js.mu.RUnlock()
+				return health
+			}
+			nasa[opts.Stream] = csa
 		} else {
 			for stream, sa := range asa {
 				if sa.Group.isMember(ourID) {
