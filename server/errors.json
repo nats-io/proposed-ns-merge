@@ -1408,5 +1408,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerInactiveThresholdExcessErrF",
+    "code": 400,
+    "error_code": 10143,
+    "description": "duplicate source configuration detected",
+    "comment": "consumer inactive threshold exceeds system limit of {limit}",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

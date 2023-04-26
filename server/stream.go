@@ -85,6 +85,12 @@ type StreamConfig struct {
 	// all older messages using a special msg header.
 	AllowRollup bool `json:"allow_rollup_hdrs"`
 
+	// The following defaults will apply to consumers when created against
+	// this stream, unless overridden manually.
+	// TODO(nat): Can/should we name these better?
+	LimitInactiveThreshold time.Duration `json:"limit_inactive_threshold,omitempty"`
+	LimitMaxAckPending     int           `json:"limit_max_ack_pending,omitempty"`
+
 	// Metadata is additional metadata for the Stream.
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
@@ -1553,6 +1559,26 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 	cfg, err := mset.jsa.configUpdateCheck(&ocfg, config, s)
 	if err != nil {
 		return NewJSStreamInvalidConfigError(err, Unless(err))
+	}
+
+	// In the event that some of the stream-level limits have changed, yell appropriately.
+	var errorConsumers []string
+	if ocfg.LimitInactiveThreshold != cfg.LimitInactiveThreshold ||
+		ocfg.LimitMaxAckPending != cfg.LimitMaxAckPending {
+		for _, c := range mset.consumers {
+			c.mu.RLock()
+			ccfg := c.cfg
+			c.mu.RUnlock()
+			if ccfg.InactiveThreshold > cfg.LimitInactiveThreshold ||
+				ccfg.MaxAckPending > cfg.LimitMaxAckPending {
+				errorConsumers = append(errorConsumers, c.name)
+			}
+		}
+	}
+	if len(errorConsumers) > 0 {
+		// TODO(nat): Return a parsable error so that we can surface something
+		// sensible through the JS API.
+		return fmt.Errorf("change to limits violates consumers: %s", strings.Join(errorConsumers, ", "))
 	}
 
 	jsa.mu.RLock()
