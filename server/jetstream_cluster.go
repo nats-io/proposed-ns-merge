@@ -1137,6 +1137,8 @@ func (js *jetStream) monitorCluster() {
 						doSnapshot()
 					}
 					ce.ReturnToPool()
+				} else {
+					s.Warnf("Failed to handle applied meta entry: %s", err)
 				}
 			}
 			aq.recycle(&ces)

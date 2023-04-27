@@ -1095,7 +1095,9 @@ func (n *raft) setupLastSnapshot() {
 		n.pterm = snap.lastTerm
 		n.commit = snap.lastIndex
 		n.applied = snap.lastIndex
-		n.apply.push(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
+		ce := newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}})
+		n.apply.push(ce)
+		n.debug("[AE] Applied %+v", ce.debug())
 		if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 			n.setWriteErrLocked(err)
 		}
@@ -1770,6 +1772,9 @@ func (n *raft) processAppendEntries() {
 	aes := n.entry.pop()
 	if ok {
 		for _, ae := range aes {
+			if len(ae.entries) > 0 { // ignore heartbeats
+				n.debug("[AE] Processing %s", ae.debug())
+			}
 			n.processAppendEntry(ae, ae.sub)
 		}
 	}
@@ -1839,6 +1844,15 @@ type CommittedEntry struct {
 	Entries []*Entry
 }
 
+func (ce *CommittedEntry) debug() string {
+	str := fmt.Sprintf("%+v: ", ce)
+	es := make([]string, 0, len(ce.Entries))
+	for _, e := range ce.Entries {
+		es = append(es, e.Type.String())
+	}
+	return str + strings.Join(es, ", ")
+}
+
 // Create a new ComittedEntry.
 func newCommittedEntry(index uint64, entries []*Entry) *CommittedEntry {
 	ce := cePool.Get().(*CommittedEntry)
@@ -1892,6 +1906,15 @@ type appendEntry struct {
 	reply string
 	sub   *subscription
 	buf   []byte
+}
+
+func (ae *appendEntry) debug() string {
+	str := fmt.Sprintf("%+v: ", ae)
+	es := make([]string, 0, len(ae.entries))
+	for _, e := range ae.entries {
+		es = append(es, e.Type.String())
+	}
+	return str + strings.Join(es, ", ")
 }
 
 // Create a new appendEntry.
@@ -2628,10 +2651,13 @@ func (n *raft) applyCommit(index uint64) error {
 		if fpae {
 			delete(n.pae, index)
 		}
-		n.apply.push(newCommittedEntry(index, committed))
+		ce := newCommittedEntry(index, committed)
+		n.apply.push(ce)
+		n.debug("[AE] Applied %+v", ce.debug())
 	} else {
 		// If we processed inline update our applied index.
 		n.applied = index
+		n.debug("[AE] No entries to apply, new index %d", index)
 	}
 	// Place back in the pool.
 	ae.returnToPool()
@@ -2811,6 +2837,9 @@ func (n *raft) runAsCandidate() {
 func (n *raft) handleAppendEntry(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 	msg = copyBytes(msg)
 	if ae, err := n.decodeAppendEntry(msg, sub, reply); err == nil {
+		if len(ae.entries) > 0 { // ignore heartbeats
+			n.debug("[AE] Handle %s", ae.debug())
+		}
 		n.entry.push(ae)
 	} else {
 		n.warn("AppendEntry failed to be placed on internal channel: corrupt entry")
