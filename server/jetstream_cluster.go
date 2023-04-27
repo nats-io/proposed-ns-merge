@@ -1650,7 +1650,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					js.srv.Errorf("JetStream cluster failed to decode stream assignment: %q", buf[1:])
 					return didSnap, didRemoveStream, didRemoveConsumer, err
 				}
-				js.srv.Debugf("[AE] Meta assignStreamOp %+v", sa)
+				js.srv.Debugf("[AE] %p Meta assignStreamOp %+v", e, sa)
 				if isRecovering {
 					js.setStreamAssignmentRecovering(sa)
 					delete(ru.removeStreams, sa.recoveryKey())
@@ -1664,7 +1664,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					js.srv.Errorf("JetStream cluster failed to decode stream assignment: %q", buf[1:])
 					return didSnap, didRemoveStream, didRemoveConsumer, err
 				}
-				js.srv.Debugf("[AE] Meta removeStreamOp %+v", sa)
+				js.srv.Debugf("[AE] %p Meta removeStreamOp %+v", e, sa)
 				if isRecovering {
 					js.setStreamAssignmentRecovering(sa)
 					key := sa.recoveryKey()
@@ -1680,7 +1680,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					js.srv.Errorf("JetStream cluster failed to decode consumer assignment: %q", buf[1:])
 					return didSnap, didRemoveStream, didRemoveConsumer, err
 				}
-				js.srv.Debugf("[AE] Meta assignConsumerOp %+v", ca)
+				js.srv.Debugf("[AE] %p Meta assignConsumerOp %+v", e, ca)
 				if isRecovering {
 					js.setConsumerAssignmentRecovering(ca)
 					key := ca.recoveryKey()
@@ -1695,7 +1695,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					js.srv.Errorf("JetStream cluster failed to decode compressed consumer assignment: %q", buf[1:])
 					return didSnap, didRemoveStream, didRemoveConsumer, err
 				}
-				js.srv.Debugf("[AE] Meta assignCompressedConsumerOp %+v", ca)
+				js.srv.Debugf("[AE] %p Meta assignCompressedConsumerOp %+v", e, ca)
 				if isRecovering {
 					js.setConsumerAssignmentRecovering(ca)
 					key := ca.recoveryKey()
@@ -1710,7 +1710,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					js.srv.Errorf("JetStream cluster failed to decode consumer assignment: %q", buf[1:])
 					return didSnap, didRemoveStream, didRemoveConsumer, err
 				}
-				js.srv.Debugf("[AE] Meta removeConsumerOp %+v", ca)
+				js.srv.Debugf("[AE] %p Meta removeConsumerOp %+v", e, ca)
 				if isRecovering {
 					js.setConsumerAssignmentRecovering(ca)
 					key := ca.recoveryKey()
@@ -1726,7 +1726,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					js.srv.Errorf("JetStream cluster failed to decode stream assignment: %q", buf[1:])
 					return didSnap, didRemoveStream, didRemoveConsumer, err
 				}
-				js.srv.Debugf("[AE] Meta updateStreamOp %+v", sa)
+				js.srv.Debugf("[AE] %p Meta updateStreamOp %+v", e, sa)
 				if isRecovering {
 					js.setStreamAssignmentRecovering(sa)
 					key := sa.recoveryKey()
