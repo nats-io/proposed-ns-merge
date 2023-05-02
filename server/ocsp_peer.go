@@ -1,9 +1,24 @@
+// Copyright 2023 The NATS Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package server
 
 import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ocsp"
@@ -13,75 +28,147 @@ import (
 
 var ocspPeerVerify bool
 
+func parseOCSPPeer(v interface{}) (pcfg *certidp.OCSPPeerConfig, retError error) {
+	var lt token
+	defer convertPanicToError(&lt, &retError)
+
+	tk, v := unwrapValue(v, &lt)
+	cm, ok := v.(map[string]interface{})
+	if !ok {
+		return nil, &configErr{tk, fmt.Sprintf("Expected map to define OCSP peer opts, got %T", v)}
+	}
+
+	pcfg = &certidp.OCSPPeerConfig{}
+	retError = nil
+
+	for mk, mv := range cm {
+		// Again, unwrap token value if line check is required.
+		tk, mv = unwrapValue(mv, &lt)
+		switch strings.ToLower(mk) {
+		case "verify":
+			verify, ok := mv.(bool)
+			if !ok {
+				return nil, &configErr{tk, fmt.Sprintf("error parsing tls peer config, unknown field [%q]", mk)}
+			}
+			pcfg.Verify = verify
+		case "allowed_clockskew":
+			at := float64(0)
+			switch mv := mv.(type) {
+			case int64:
+				at = float64(mv)
+			case float64:
+				at = mv
+			case string:
+				d, err := time.ParseDuration(mv)
+				if err != nil {
+					return nil, &configErr{tk, fmt.Sprintf("error parsing tls peer config, 'allowed_clockskew' %s", err)}
+				}
+				at = d.Seconds()
+			default:
+				return nil, &configErr{tk, "error parsing tls peer config, 'allowed_clockskew' wrong type"}
+			}
+			pcfg.ClockSkew = at
+		case "ca_timeout":
+			at := float64(0)
+			switch mv := mv.(type) {
+			case int64:
+				at = float64(mv)
+			case float64:
+				at = mv
+			case string:
+				d, err := time.ParseDuration(mv)
+				if err != nil {
+					return nil, &configErr{tk, fmt.Sprintf("error parsing tls peer config, 'ca_timeout' %s", err)}
+				}
+				at = d.Seconds()
+			default:
+				return nil, &configErr{tk, "error parsing tls peer config, 'ca_timeout' wrong type"}
+			}
+			pcfg.Timeout = at
+		case "cache":
+			cache, ok := mv.(bool)
+			if !ok {
+				return nil, &configErr{tk, fmt.Sprintf("error parsing tls peer config, unknown field [%q]", mk)}
+			}
+			pcfg.Cache = cache
+		case "account":
+			pcfg.Account = mv.(string)
+		case "bucket":
+			pcfg.Bucket = mv.(string)
+		default:
+			return nil, &configErr{tk, "error parsing tls peer config, unknown field"}
+		}
+	}
+	return pcfg, nil
+}
+
 // mTLS OCSP and Leaf OCSP
-func (s *Server) plugTLSVerifyConn(config *tlsConfigKind) (*tls.Config, bool, error) {
+func (s *Server) plugTLSOCSPPeer(config *tlsConfigKind) (*tls.Config, bool, error) {
 	if config == nil || config.tlsConfig == nil {
 		return nil, false, errors.New("unable to plug TLS verify connection, config is nil")
 	}
-	s.Debugf("Plugging TLS verify connection for %s", config.kind)
+	s.Debugf("Plugging TLS OCSP peer for %s", config.kind)
 
 	kind := config.kind
 	isSpoke := config.isLeafSpoke
 	tcOpts := config.tlsOpts
 
-	if tcOpts == nil || tcOpts.VerifyPeerConn == false {
+	if tcOpts == nil || tcOpts.OCSPPeerConfig == nil || !tcOpts.OCSPPeerConfig.Verify {
 		return nil, false, nil
 	}
 
 	// peer is a tls client
 	if kind == kindStringMap[CLIENT] || (kind == kindStringMap[LEAF] && !isSpoke) {
 		if !tcOpts.Verify {
-			return nil, false, errors.New("verify_peer_conn for clients requires mTLS to be enabled")
+			return nil, false, errors.New("ocsp_peer for client connections requires mTLS to be enabled")
 		}
-		return s.plugClientTLSVerifyConn(config)
+		return s.plugClientTLSOCSPPeer(config)
 	}
 
 	// peer is a tls server
 	if kind == kindStringMap[LEAF] && isSpoke {
-		return s.plugServerTLSVerifyConn(config)
+		return s.plugServerTLSOCSPPeer(config)
 	}
 
 	return nil, false, nil
 }
 
-func (s *Server) plugClientTLSVerifyConn(config *tlsConfigKind) (*tls.Config, bool, error) {
+func (s *Server) plugClientTLSOCSPPeer(config *tlsConfigKind) (*tls.Config, bool, error) {
 	if config == nil || config.tlsConfig == nil || config.tlsOpts == nil {
-		return nil, false, errors.New("unable to plug client TLS verify connection: nil config")
+		return nil, false, errors.New("unable to plug client TLS OCSP peer: nil config")
 	}
 
 	tc := config.tlsConfig
 	tcOpts := config.tlsOpts
 
-	tlsPeerOpts := &certidp.VerifyPeerConnOpts{
-		VerifyPeerConn:          tcOpts.VerifyPeerConn,
-		VerifyPeerConnTimeout:   tcOpts.VerifyPeerConnTimeout,
-		VerifyPeerConnClockSkew: tcOpts.VerifyPeerConnClockSkew,
+	if tcOpts.OCSPPeerConfig == nil || !tcOpts.OCSPPeerConfig.Verify {
+		return tc, false, nil
 	}
 
 	tc.VerifyConnection = func(cs tls.ConnectionState) error {
-		if !s.tlsClientOCSPValid(cs.VerifiedChains, tlsPeerOpts) {
+		if !s.tlsClientOCSPValid(cs.VerifiedChains, tcOpts.OCSPPeerConfig) {
 			return errors.New("verify client connection after TLS handshake false")
 		}
 		return nil
 	}
+
 	return tc, true, nil
 }
 
-func (s *Server) plugServerTLSVerifyConn(config *tlsConfigKind) (*tls.Config, bool, error) {
+func (s *Server) plugServerTLSOCSPPeer(config *tlsConfigKind) (*tls.Config, bool, error) {
 	if config == nil || config.tlsConfig == nil || config.tlsOpts == nil {
-		return nil, false, errors.New("unable to plug server TLS verify connection: nil config")
+		return nil, false, errors.New("unable to plug server TLS OCSP peer: nil config")
 	}
+
 	tc := config.tlsConfig
 	tcOpts := config.tlsOpts
 
-	tlsPeerOpts := &certidp.VerifyPeerConnOpts{
-		VerifyPeerConn:          tcOpts.VerifyPeerConn,
-		VerifyPeerConnTimeout:   tcOpts.VerifyPeerConnTimeout,
-		VerifyPeerConnClockSkew: tcOpts.VerifyPeerConnClockSkew,
+	if tcOpts.OCSPPeerConfig == nil || !tcOpts.OCSPPeerConfig.Verify {
+		return tc, false, nil
 	}
 
 	tc.VerifyConnection = func(cs tls.ConnectionState) error {
-		if !s.tlsServerOCSPValid(cs.VerifiedChains, tlsPeerOpts) {
+		if !s.tlsServerOCSPValid(cs.VerifiedChains, tcOpts.OCSPPeerConfig) {
 			return errors.New("verify server connection after TLS handshake false")
 		}
 		return nil
@@ -95,7 +182,7 @@ func (s *Server) plugServerTLSVerifyConn(config *tlsConfigKind) (*tls.Config, bo
 // Upon first OCSP Valid chain found, the Server is deemed OCSP Valid. If none of the chains are
 // OCSP Valid, the Server is deemed OCSP Invalid. A verified self-signed certificate (chain length 1)
 // is also considered OCSP Valid.
-func (s *Server) tlsServerOCSPValid(chains [][]*x509.Certificate, opts *certidp.VerifyPeerConnOpts) bool {
+func (s *Server) tlsServerOCSPValid(chains [][]*x509.Certificate, opts *certidp.OCSPPeerConfig) bool {
 	s.Debugf("Validating %d TLS server chain(s) for OCSP eligibility", len(chains))
 	return s.peerOCSPValid(chains, opts)
 }
@@ -106,12 +193,12 @@ func (s *Server) tlsServerOCSPValid(chains [][]*x509.Certificate, opts *certidp.
 // Upon first OCSP Valid chain found, the Client is deemed OCSP Valid. If none of the chains are
 // OCSP Valid, the Client is deemed OCSP Invalid. A verified self-signed certificate (chain length 1)
 // is also considered OCSP Valid.
-func (s *Server) tlsClientOCSPValid(chains [][]*x509.Certificate, opts *certidp.VerifyPeerConnOpts) bool {
+func (s *Server) tlsClientOCSPValid(chains [][]*x509.Certificate, opts *certidp.OCSPPeerConfig) bool {
 	s.Debugf("Validating %d TLS client chain(s) for OCSP eligibility", len(chains))
 	return s.peerOCSPValid(chains, opts)
 }
 
-func (s *Server) peerOCSPValid(chains [][]*x509.Certificate, opts *certidp.VerifyPeerConnOpts) bool {
+func (s *Server) peerOCSPValid(chains [][]*x509.Certificate, opts *certidp.OCSPPeerConfig) bool {
 	for ci, chain := range chains {
 		s.Debugf("Chain %d: %d link(s)", ci, len(chain))
 		// verified self-signed certificate is Client OCSP Valid
@@ -168,7 +255,7 @@ func (s *Server) peerOCSPValid(chains [][]*x509.Certificate, opts *certidp.Verif
 	return false
 }
 
-func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.VerifyPeerConnOpts) bool {
+func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerConfig) bool {
 	if link == nil || link.Leaf == nil || link.Issuer == nil || link.OCSPWebEndpoints == nil || len(*link.OCSPWebEndpoints) < 1 {
 		return false
 	}
@@ -201,8 +288,7 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.VerifyPeerC
 		return false
 	}
 
-	// TODO(tgb): configurable clock skew
-	skew := time.Duration(opts.VerifyPeerConnClockSkew * float64(time.Second))
+	skew := time.Duration(opts.ClockSkew * float64(time.Second))
 	if skew <= 0*time.Second {
 		skew = certidp.AllowedClockSkew
 	}

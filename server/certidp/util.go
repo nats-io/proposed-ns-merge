@@ -1,3 +1,16 @@
+// Copyright 2023 The NATS Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package certidp
 
 import (
@@ -7,11 +20,22 @@ import (
 	"time"
 )
 
-// VerifyPeerConnOpts is a neutral passing struct for plugins ClientTLSVerifyConn and ServerTLSVerifyConn
-type VerifyPeerConnOpts struct {
-	VerifyPeerConn          bool
-	VerifyPeerConnTimeout   float64
-	VerifyPeerConnClockSkew float64
+const AllowedClockSkew = 30 * time.Second
+
+type ChainLink struct {
+	Leaf             *x509.Certificate
+	Issuer           *x509.Certificate
+	OCSPWebEndpoints *[]*url.URL
+}
+
+// OCSPPeerConfig holds the parsed OCSP peer configuration section of TLS configuration
+type OCSPPeerConfig struct {
+	Verify    bool
+	Timeout   float64
+	ClockSkew float64
+	Cache     bool // enum: none, kvstore
+	Account   string
+	Bucket    string
 }
 
 // Log is a neutral method of passign server loggers to plugins
@@ -23,28 +47,30 @@ type Log struct {
 	Tracef  func(format string, v ...interface{})
 }
 
-const AllowedClockSkew = 30 * time.Second
-
-type ChainLink struct {
-	Leaf             *x509.Certificate
-	Issuer           *x509.Certificate
-	OCSPWebEndpoints *[]*url.URL
-}
-
 var ResponseCache OCSPResponseCache = &NoOpCache{}
 
 var _ = `
-For clients, leaf spokes (remotes), and leaf hubs, you may enable post-handshake OCSP peer validation:
+For client, leaf spoke (remotes), and leaf hub connections, you may enable OCSP peer validation:
 
     tls {
         ...
-        verify_peer_con: true
-        # responder timeout in seconds (may be fractional)
-        verify_peer_con_timeout:    2
+        ocsp_peer {
+           verify: true
+           # OCSP responder timeout in seconds (may be fractional)
+           ca_timeout: 2
+           # Allowed skew between server and OCSP responder time in seconds (may be fractional)
+           allowed_clockskew: 30
+           # Cache OCSP responses for the duration of the CA response validity period
+           cache: true
+           # JS-enabled account name for response cache
+           account: "MY_ACCOUNT"
+           # KV-bucket name for response cache
+           bucket: "MY_BUCKET"
+        }
         ...
     }
 
-Note: OCSP validation is enabled for routes and gateways via the global 'ocsp' staple option.
+Note: OCSP validation is enabled for routes and gateways via the server 'ocsp' staple option.
 `
 
 func GenerateFingerprint(cert *x509.Certificate) string {

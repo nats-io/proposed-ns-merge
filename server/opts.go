@@ -1,4 +1,4 @@
-// Copyright 2012-2022 The NATS Authors
+// Copyright 2012-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -35,6 +35,7 @@ import (
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/conf"
+	"github.com/nats-io/nats-server/v2/server/certidp"
 	"github.com/nats-io/nats-server/v2/server/certstore"
 	"github.com/nats-io/nkeys"
 )
@@ -581,24 +582,22 @@ type authorization struct {
 // TLSConfigOpts holds the parsed tls config information,
 // used with flag parsing
 type TLSConfigOpts struct {
-	CertFile                string
-	KeyFile                 string
-	CaFile                  string
-	Verify                  bool
-	Insecure                bool
-	Map                     bool
-	TLSCheckKnownURLs       bool
-	Timeout                 float64
-	RateLimit               int64
-	Ciphers                 []uint16
-	CurvePreferences        []tls.CurveID
-	PinnedCerts             PinnedCertSet
-	CertStore               certstore.StoreType
-	CertMatchBy             certstore.MatchByType
-	CertMatch               string
-	VerifyPeerConn          bool
-	VerifyPeerConnTimeout   float64
-	VerifyPeerConnClockSkew float64
+	CertFile          string
+	KeyFile           string
+	CaFile            string
+	Verify            bool
+	Insecure          bool
+	Map               bool
+	TLSCheckKnownURLs bool
+	Timeout           float64
+	RateLimit         int64
+	Ciphers           []uint16
+	CurvePreferences  []tls.CurveID
+	PinnedCerts       PinnedCertSet
+	CertStore         certstore.StoreType
+	CertMatchBy       certstore.MatchByType
+	CertMatch         string
+	OCSPPeerConfig    *certidp.OCSPPeerConfig
 }
 
 // OCSPConfig represents the options of OCSP stapling options.
@@ -4146,46 +4145,32 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 				return nil, &configErr{tk, certstore.ErrBadCertMatchField.Error()}
 			}
 			tc.CertMatch = certMatch
-		case "verify_peer_conn":
-			verifyPeerConn, ok := mv.(bool)
-			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, unknown field [%q]", mk)}
-			}
-			tc.VerifyPeerConn = verifyPeerConn
-		case "verify_peer_conn_timeout":
-			at := float64(0)
-			switch mv := mv.(type) {
-			case int64:
-				at = float64(mv)
-			case float64:
-				at = mv
-			case string:
-				d, err := time.ParseDuration(mv)
-				if err != nil {
-					return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, 'verify_peer_conn_timeout' %s", err)}
+		case "ocsp_peer":
+			switch vv := mv.(type) {
+			case bool:
+				if vv {
+					// Set enabled with no cache
+					pc := &certidp.OCSPPeerConfig{
+						Verify: true,
+						Cache:  false,
+					}
+					tc.OCSPPeerConfig = pc
+				} else {
+					// Set disabled
+					pc := &certidp.OCSPPeerConfig{
+						Verify: false,
+					}
+					tc.OCSPPeerConfig = pc
 				}
-				at = d.Seconds()
-			default:
-				return nil, &configErr{tk, "error parsing tls config, 'verify_peer_conn_timeout' wrong type"}
-			}
-			tc.VerifyPeerConnTimeout = at
-		case "verify_peer_conn_clockskew":
-			at := float64(0)
-			switch mv := mv.(type) {
-			case int64:
-				at = float64(mv)
-			case float64:
-				at = mv
-			case string:
-				d, err := time.ParseDuration(mv)
+			case map[string]interface{}:
+				pc, err := parseOCSPPeer(mv)
 				if err != nil {
-					return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, 'verify_peer_conn_clockskew' %s", err)}
+					return nil, &configErr{tk, err.Error()}
 				}
-				at = d.Seconds()
+				tc.OCSPPeerConfig = pc
 			default:
-				return nil, &configErr{tk, "error parsing tls config, 'verify_peer_conn_clockskew' wrong type"}
+				return nil, &configErr{tk, fmt.Sprintf("error parsing ocsp peer config: unsupported type %T", v)}
 			}
-			tc.VerifyPeerConnClockSkew = at
 		default:
 			return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, unknown field [%q]", mk)}
 		}

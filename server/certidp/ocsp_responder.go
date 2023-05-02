@@ -1,3 +1,16 @@
+// Copyright 2023 The NATS Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package certidp
 
 import (
@@ -13,12 +26,12 @@ import (
 
 const defaultOCSPResponderTimeout = 2 * time.Second
 
-func FetchOCSPResponse(link *ChainLink, opts *VerifyPeerConnOpts, log *Log) ([]byte, *ocsp.Response, error) {
+func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte, *ocsp.Response, error) {
 	if link == nil || link.Leaf == nil || link.Issuer == nil || opts == nil || log == nil {
 		return nil, nil, fmt.Errorf("invalid chain link")
 	}
 
-	timeout := time.Duration(opts.VerifyPeerConnTimeout * float64(time.Second))
+	timeout := time.Duration(opts.Timeout * float64(time.Second))
 	if timeout <= 0*time.Second {
 		timeout = defaultOCSPResponderTimeout
 	}

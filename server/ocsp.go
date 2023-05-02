@@ -637,7 +637,7 @@ func (s *Server) enableOCSP() error {
 
 		// mTLS OCSP check (client, leaf) and tls server peer check for leaf remotes
 		if config.kind == kindStringMap[CLIENT] || config.kind == kindStringMap[LEAF] {
-			tc, plugged, err := s.plugTLSVerifyConn(config)
+			tc, plugged, err := s.plugTLSOCSPPeer(config)
 			if err != nil {
 				return err
 			}

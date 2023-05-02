@@ -1,3 +1,16 @@
+// Copyright 2023 The NATS Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package test
 
 import (
@@ -79,9 +92,12 @@ func TestOCSPPeerGoodClients(t *testing.T) {
 					timeout: 5
 					verify: true
 
-					verify_peer_conn: true
-					verify_peer_conn_timeout: 5
-					verify_peer_conn_clockskew: 5
+					# Explicit enable and no cache
+					ocsp_peer: {
+						verify: true
+						ca_timeout: 5
+						allowed_clockskew: 30
+					}
 				}
 			`,
 			[]nats.Option{
@@ -105,9 +121,8 @@ func TestOCSPPeerGoodClients(t *testing.T) {
 					timeout: 5
 					verify: true
 
-					verify_peer_conn: true
-					verify_peer_conn_timeout: 5
-					verify_peer_conn_clockskew: 5
+					# Setting to true accepts all defaults and no cache
+					ocsp_peer: true
 				}
 			`,
 			[]nats.Option{
@@ -190,9 +205,7 @@ func TestOCSPPeerUnknownClient(t *testing.T) {
 					timeout: 5
 					verify: true
 
-					verify_peer_conn: true
-					verify_peer_conn_timeout: 5
-					verify_peer_conn_clockskew: 5
+					ocsp_peer: true
 				}
 			`,
 			[]nats.Option{
@@ -256,7 +269,7 @@ func TestOCSPPeerRevokedClient(t *testing.T) {
 		configure func()
 	}{
 		{
-			"mTLS OCSP peer check on inbound client connection, client unknown to intermediate CA 1",
+			"mTLS OCSP peer check on inbound client connection, client revoked by intermediate CA 1",
 			`
 				port: -1
 
@@ -267,9 +280,8 @@ func TestOCSPPeerRevokedClient(t *testing.T) {
 					timeout: 5
 					verify: true
 
-					verify_peer_conn: true
-					verify_peer_conn_timeout: 5
-					verify_peer_conn_clockskew: 5
+					# Turn on CA OCSP check so this revoked client should NOT be able to connect
+					ocsp_peer: true
 				}
 			`,
 			[]nats.Option{
@@ -279,6 +291,56 @@ func TestOCSPPeerRevokedClient(t *testing.T) {
 			},
 			errors.New("remote error: tls: bad certificate"),
 			errors.New("expect error"),
+			func() {},
+		},
+		{
+			"mTLS OCSP peer check on inbound client connection, client revoked by intermediate CA 1 but no OCSP check",
+			`
+				port: -1
+
+				tls: {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+					verify: true
+
+					# Explicit disable of OCSP peer check
+					ocsp_peer: false
+				}
+			`,
+			[]nats.Option{
+				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
+				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
+			func() {},
+		},
+		{
+			"mTLS OCSP peer check on inbound client connection, client revoked by intermediate CA 1 but no OCSP check",
+			`
+				port: -1
+
+				tls: {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+					verify: true
+
+					# Implicit disable of OCSP peer check (i.e. not configured)
+					# ocsp_peer: false
+				}
+			`,
+			[]nats.Option{
+				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
+				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
 			func() {},
 		},
 	} {
@@ -302,8 +364,6 @@ func TestOCSPPeerRevokedClient(t *testing.T) {
 				return
 			}
 			defer nc.Close()
-
-			t.Errorf("Expected connection error, fell through")
 		})
 	}
 }
@@ -350,9 +410,7 @@ func TestOCSPPeerUnknownAndRevokedIntermediate(t *testing.T) {
 					timeout: 5
 					verify: true
 
-					verify_peer_conn: true
-					verify_peer_conn_timeout: 5
-					verify_peer_conn_clockskew: 5
+					ocsp_peer: true
 				}
 			`,
 			[]nats.Option{
@@ -376,9 +434,7 @@ func TestOCSPPeerUnknownAndRevokedIntermediate(t *testing.T) {
 					timeout: 5
 					verify: true
 
-					verify_peer_conn: true
-					verify_peer_conn_timeout: 5
-					verify_peer_conn_clockskew: 5
+					ocsp_peer: true
 				}
 			`,
 			[]nats.Option{
