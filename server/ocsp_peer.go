@@ -86,11 +86,15 @@ func parseOCSPPeer(v interface{}) (pcfg *certidp.OCSPPeerConfig, retError error)
 			}
 			pcfg.Timeout = at
 		case "cache":
-			cache, ok := mv.(bool)
+			cache, ok := mv.(string)
 			if !ok {
 				return nil, &configErr{tk, fmt.Sprintf("error parsing tls peer config, unknown field [%q]", mk)}
 			}
-			pcfg.Cache = cache
+			cacheType, exists := certidp.CacheTypeMap[strings.ToLower(cache)]
+			if !exists {
+				return nil, &configErr{tk, fmt.Sprintf("error parsing tls peer config, unknown cache type [%s]", cache)}
+			}
+			pcfg.Cache = cacheType
 		case "account":
 			pcfg.Account = mv.(string)
 		case "bucket":

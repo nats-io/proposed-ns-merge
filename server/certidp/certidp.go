@@ -22,6 +22,18 @@ import (
 
 const AllowedClockSkew = 30 * time.Second
 
+type CacheType int
+
+const (
+	NONE CacheType = iota + 1
+	KV
+)
+
+var CacheTypeMap = map[string]CacheType{
+	"none": NONE,
+	"kv":   KV,
+}
+
 type ChainLink struct {
 	Leaf             *x509.Certificate
 	Issuer           *x509.Certificate
@@ -33,7 +45,7 @@ type OCSPPeerConfig struct {
 	Verify    bool
 	Timeout   float64
 	ClockSkew float64
-	Cache     bool // enum: none, kvstore
+	Cache     CacheType
 	Account   string
 	Bucket    string
 }
@@ -61,8 +73,8 @@ For client, leaf spoke (remotes), and leaf hub connections, you may enable OCSP 
            # Allowed skew between server and OCSP responder time in seconds (may be fractional)
            allowed_clockskew: 30
            # Cache OCSP responses for the duration of the CA response validity period
-           cache: true
-           # JS-enabled account name for response cache
+           cache: <none, kv>
+           # JS-enabled account name for KV response cache
            account: "MY_ACCOUNT"
            # KV-bucket name for response cache
            bucket: "MY_BUCKET"
