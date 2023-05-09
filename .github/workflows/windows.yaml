@@ -1,17 +1,16 @@
-name: NATS Server Testing
+name: "Windows-specific Tests"
 on: [push, pull_request]
 
 jobs:
-  test:
+  tests:
     strategy:
       matrix:
-        go: [1.18, 1.19]
+        go: [1.19]
 
     env:
-      GOPATH: /home/runner/work/nats-server
       GO111MODULE: "on"
 
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v1
@@ -24,6 +23,5 @@ jobs:
           go-version: ${{matrix.go}}
 
       - name: Run tests
-        shell: bash --noprofile --norc -x -eo pipefail {0}
         run: |
-          go test -vet=off -i ./... -run=Windows
+          go test -vet=off ./... -run=TestWindows

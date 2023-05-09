@@ -69,6 +69,7 @@ func (w *winServiceWrapper) Execute(args []string, changes <-chan svc.ChangeRequ
 	// Wait for accept loop(s) to be started
 	if !w.server.ReadyForConnections(10 * time.Second) {
 		// Failed to start.
+		status <- svc.Status{State: svc.StopPending}
 		return false, 1
 	}
 
