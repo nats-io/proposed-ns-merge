@@ -20,18 +20,23 @@ import (
 	"time"
 )
 
-const AllowedClockSkew = 30 * time.Second
+const (
+	AllowedClockSkew            = 30 * time.Second
+	DefaultOCSPResponderTimeout = 2 * time.Second
+)
 
 type CacheType int
 
 const (
 	NONE CacheType = iota + 1
-	KV
+	SHARED
+	LOCAL
 )
 
 var CacheTypeMap = map[string]CacheType{
-	"none": NONE,
-	"kv":   KV,
+	"none":   NONE,
+	"shared": SHARED,
+	"local":  LOCAL,
 }
 
 type ChainLink struct {
@@ -45,9 +50,6 @@ type OCSPPeerConfig struct {
 	Verify    bool
 	Timeout   float64
 	ClockSkew float64
-	Cache     CacheType
-	Account   string
-	Bucket    string
 }
 
 // Log is a neutral method of passign server loggers to plugins
@@ -58,8 +60,6 @@ type Log struct {
 	Errorf  func(format string, v ...interface{})
 	Tracef  func(format string, v ...interface{})
 }
-
-var ResponseCache OCSPResponseCache = &NoOpCache{}
 
 var _ = `
 For client, leaf spoke (remotes), and leaf hub connections, you may enable OCSP peer validation:
@@ -73,10 +73,10 @@ For client, leaf spoke (remotes), and leaf hub connections, you may enable OCSP 
            # Allowed skew between server and OCSP responder time in seconds (may be fractional)
            allowed_clockskew: 30
            # Cache OCSP responses for the duration of the CA response validity period
-           cache: <none, kv>
-           # JS-enabled account name for KV response cache
+           cache: <none, shared, local>
+           # JS-enabled account name for "shared" response cache
            account: "MY_ACCOUNT"
-           # KV-bucket name for response cache
+           # KV-bucket name for "shared" response cache
            bucket: "MY_BUCKET"
         }
         ...

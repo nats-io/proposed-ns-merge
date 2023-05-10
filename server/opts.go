@@ -358,6 +358,9 @@ type Options struct {
 	// JetStream
 	maxMemSet   bool
 	maxStoreSet bool
+
+	// OCSP Cache config enables next-gen cache for OCSP features
+	OCSPCacheConfig *OCSPResponseCacheConfig
 }
 
 // WebsocketOpts are options for websocket
@@ -1422,6 +1425,38 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			m[kk] = v.(string)
 		}
 		o.JsAccDefaultDomain = m
+	case "ocsp_cache":
+		var err error
+		switch vv := v.(type) {
+		case bool:
+			if vv {
+				// Set enabled with local cache default
+				// TODO(tgb) - alter true case when local cache is implemented
+				pc := &OCSPResponseCacheConfig{
+					Type: certidp.NONE,
+				}
+				o.OCSPCacheConfig = pc
+			} else {
+				// Set enabled with noop cache
+				pc := &OCSPResponseCacheConfig{
+					Type: certidp.NONE,
+				}
+				o.OCSPCacheConfig = pc
+			}
+		case map[string]interface{}:
+			pc, err := parseOCSPResponseCache(v)
+			if err != nil {
+				*errors = append(*errors, err)
+				return
+			}
+			o.OCSPCacheConfig = pc
+		default:
+			err = &configErr{tk, fmt.Sprintf("error parsing tags: unsupported type %T", v)}
+		}
+		if err != nil {
+			*errors = append(*errors, err)
+			return
+		}
 	default:
 		if au := atomic.LoadInt32(&allowUnknownTopLevelField); au == 0 && !tk.IsUsedVariable() {
 			err := &unknownConfigFieldErr{
@@ -4152,7 +4187,6 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 					// Set enabled with no cache
 					pc := &certidp.OCSPPeerConfig{
 						Verify: true,
-						Cache:  false,
 					}
 					tc.OCSPPeerConfig = pc
 				} else {

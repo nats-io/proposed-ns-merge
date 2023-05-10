@@ -85,20 +85,6 @@ func parseOCSPPeer(v interface{}) (pcfg *certidp.OCSPPeerConfig, retError error)
 				return nil, &configErr{tk, "error parsing tls peer config, 'ca_timeout' wrong type"}
 			}
 			pcfg.Timeout = at
-		case "cache":
-			cache, ok := mv.(string)
-			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing tls peer config, unknown field [%q]", mk)}
-			}
-			cacheType, exists := certidp.CacheTypeMap[strings.ToLower(cache)]
-			if !exists {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing tls peer config, unknown cache type [%s]", cache)}
-			}
-			pcfg.Cache = cacheType
-		case "account":
-			pcfg.Account = mv.(string)
-		case "bucket":
-			pcfg.Bucket = mv.(string)
 		default:
 			return nil, &configErr{tk, "error parsing tls peer config, unknown field"}
 		}
@@ -275,9 +261,9 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 	// cache check here
 	fingerprint := certidp.GenerateFingerprint(link.Issuer)
 
-	s.Debugf("Cache enabled: %t", ocspResponseCache.enabled)
+	s.Debugf("Cache online: %t", ocspResponseCache.Online())
 
-	if resp := certidp.ResponseCache.Get(fingerprint, sLogs); resp != nil {
+	if resp := ocspResponseCache.Get(fingerprint, sLogs); resp != nil {
 		// cache hit
 		s.Debugf("Cache hit for cert: %s issuer: %s", link.Leaf.Subject.CommonName, link.Issuer.Subject.CommonName)
 	}
@@ -313,6 +299,7 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 		return false
 	}
 
+	// TODO(tgb): introduce option to allow responder Unknown as "good"?
 	if ocspr.Status != ocsp.Good {
 		s.Debugf("CA OCSP response NOT GOOD [cert: %s issuer: %s]", link.Leaf.Subject.CommonName, link.Issuer.Subject.CommonName)
 		return false

@@ -51,6 +51,7 @@ func newOCSPResponderIntermediateCA2(t *testing.T) *http.Server {
 }
 
 // TestOCSPPeerGoodClients is test of two NATS client (AIA enabled at leaf and cert) under good path (different intermediates)
+// and default ocsp_cache implementation (omitted ocsp_cache configuration
 func TestOCSPPeerGoodClients(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -81,7 +82,7 @@ func TestOCSPPeerGoodClients(t *testing.T) {
 		configure func()
 	}{
 		{
-			"mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
+			"Default cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
 			`
 				port: -1
 
@@ -92,7 +93,7 @@ func TestOCSPPeerGoodClients(t *testing.T) {
 					timeout: 5
 					verify: true
 
-					# Explicit enable and no cache
+					# Explicit configuration
 					ocsp_peer: {
 						verify: true
 						ca_timeout: 5
@@ -110,7 +111,7 @@ func TestOCSPPeerGoodClients(t *testing.T) {
 			func() {},
 		},
 		{
-			"mTLS OCSP peer check on inbound client connection, client of intermediate CA 2",
+			"Default cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 2",
 			`
 				port: -1
 
@@ -121,12 +122,101 @@ func TestOCSPPeerGoodClients(t *testing.T) {
 					timeout: 5
 					verify: true
 
-					# Setting to true accepts all defaults and no cache
+					# Setting to true same as ocsp_peer->verify: true and defaults
 					ocsp_peer: true
 				}
 			`,
 			[]nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client2/UserB1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client2/private/UserB1_keypair.pem"),
+				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
+			func() {},
+		},
+		{
+			"explicit false cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
+			`
+				port: -1
+				ocsp_cache: false
+				tls: {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+					verify: true
+
+					# Explicit configuration
+					ocsp_peer: {
+						verify: true
+						ca_timeout: 5
+						allowed_clockskew: 30
+					}
+				}
+			`,
+			[]nats.Option{
+				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
+				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
+			func() {},
+		},
+		{
+			"explicit true cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
+			`
+				port: -1
+				ocsp_cache: true
+				tls: {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+					verify: true
+
+					# Explicit configuration
+					ocsp_peer: {
+						verify: true
+						ca_timeout: 5
+						allowed_clockskew: 30
+					}
+				}
+			`,
+			[]nats.Option{
+				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
+				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
+			func() {},
+		},
+		{
+			"none cache config: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
+			`
+				port: -1
+				ocsp_cache: {
+					type: none
+				}
+				tls: {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+					verify: true
+
+					# Explicit configuration
+					ocsp_peer: {
+						verify: true
+						ca_timeout: 5
+						allowed_clockskew: 30
+					}
+				}
+			`,
+			[]nats.Option{
+				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},

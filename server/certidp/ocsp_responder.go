@@ -24,8 +24,6 @@ import (
 	"golang.org/x/crypto/ocsp"
 )
 
-const defaultOCSPResponderTimeout = 2 * time.Second
-
 func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte, *ocsp.Response, error) {
 	if link == nil || link.Leaf == nil || link.Issuer == nil || opts == nil || log == nil {
 		return nil, nil, fmt.Errorf("invalid chain link")
@@ -33,7 +31,7 @@ func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte,
 
 	timeout := time.Duration(opts.Timeout * float64(time.Second))
 	if timeout <= 0*time.Second {
-		timeout = defaultOCSPResponderTimeout
+		timeout = DefaultOCSPResponderTimeout
 	}
 
 	getRequestBytes := func(u string, hc *http.Client) ([]byte, error) {
