@@ -23,6 +23,7 @@ import (
 
 	"golang.org/x/crypto/ocsp"
 
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 )
 
@@ -561,4 +562,307 @@ func TestOCSPPeerUnknownAndRevokedIntermediate(t *testing.T) {
 			t.Errorf("Expected connection error, fell through")
 		})
 	}
+}
+
+// TestOCSPPeerLeafGood tests Leaf Spoke peer checking Leaf Hub, Leaf Hub peer checking Leaf Spoke, and both peer checking
+func TestOCSPPeerLeafGood(t *testing.T) {
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
+	defer rootCAResponder.Shutdown(ctx)
+	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+
+	intermediateCA1Responder := newOCSPResponderIntermediateCA1(t)
+	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
+	defer intermediateCA1Responder.Shutdown(ctx)
+	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_cert.pem", ocsp.Good)
+	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer2_cert.pem", ocsp.Good)
+
+	for _, test := range []struct {
+		name        string
+		hubconfig   string
+		spokeconfig string
+		expected    int
+	}{
+		{
+			"OCSP peer check on Leaf Hub by Leaf Spoke (TLS client OCSP verification of TLS server)",
+			`
+				port: -1
+				leaf: {
+					listen: 127.0.0.1:7444
+					tls: {
+						cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+						key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+						ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+						timeout: 5
+					}
+				}
+			`,
+			`
+				port: -1
+				leaf: {
+					remotes: [
+						{
+							url: "nats://127.0.0.1:7444",
+							tls: {
+								ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+								timeout: 5
+
+								ocsp_peer: true
+							}
+						}
+					]
+				}
+			`,
+			1,
+		},
+		{
+			"OCSP peer check on Leaf Spoke by Leaf Hub (TLS server OCSP verification of TLS client)",
+			`
+				port: -1
+				leaf: {
+					listen: 127.0.0.1:7444
+					tls: {
+						cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+						key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+						ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+						timeout: 5
+						verify: true
+
+						ocsp_peer: true
+					}
+				}
+			`,
+			`
+				port: -1
+				leaf: {
+					remotes: [
+						{
+							url: "nats://127.0.0.1:7444",
+							tls: {
+								cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer2_bundle.pem"
+								key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer2_keypair.pem"
+								ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+								timeout: 5
+							}
+						}
+					]
+				}
+			`,
+			1,
+		},
+		{
+			"OCSP peer check bi-directionally",
+			`
+				port: -1
+				leaf: {
+					listen: 127.0.0.1:7444
+					tls: {
+						cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+						key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+						ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+						timeout: 5
+						verify: true
+
+						ocsp_peer: true
+					}
+				}
+			`,
+			`
+				port: -1
+				leaf: {
+					remotes: [
+						{
+							url: "nats://127.0.0.1:7444",
+							tls: {
+								cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer2_bundle.pem"
+								key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer2_keypair.pem"
+								ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+								timeout: 5
+
+								ocsp_peer: true
+							}
+						}
+					]
+				}
+			`,
+			1,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			hubcontent := test.hubconfig
+			hubconf := createConfFile(t, []byte(hubcontent))
+			hub, _ := RunServerWithConfig(hubconf)
+			defer hub.Shutdown()
+
+			spokecontent := test.spokeconfig
+			spokeconf := createConfFile(t, []byte(spokecontent))
+			spoke, _ := RunServerWithConfig(spokeconf)
+			defer spoke.Shutdown()
+
+			checkLeafNodeConnectedCount(t, hub, test.expected)
+		})
+	}
+}
+
+// TestOCSPPeerLeafRejects tests rejected Leaf Hub, rejected Leaf Spoke, and both rejecting each other
+func TestOCSPPeerLeafReject(t *testing.T) {
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
+	defer rootCAResponder.Shutdown(ctx)
+	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+
+	intermediateCA1Responder := newOCSPResponderIntermediateCA1(t)
+	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
+	defer intermediateCA1Responder.Shutdown(ctx)
+	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_cert.pem", ocsp.Revoked)
+	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer2_cert.pem", ocsp.Revoked)
+
+	for _, test := range []struct {
+		name        string
+		hubconfig   string
+		spokeconfig string
+		expected    int
+	}{
+		{
+			"OCSP peer check on Leaf Hub by Leaf Spoke (TLS client OCSP verification of TLS server)",
+			`
+				port: -1
+				leaf: {
+					listen: 127.0.0.1:7444
+					tls: {
+						cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+						key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+						ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+						timeout: 5
+					}
+				}
+			`,
+			`
+				port: -1
+				leaf: {
+					remotes: [
+						{
+							url: "nats://127.0.0.1:7444",
+							tls: {
+								ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+								timeout: 5
+
+								ocsp_peer: true
+							}
+						}
+					]
+				}
+			`,
+			0,
+		},
+		{
+			"OCSP peer check on Leaf Spoke by Leaf Hub (TLS server OCSP verification of TLS client)",
+			`
+				port: -1
+				leaf: {
+					listen: 127.0.0.1:7444
+					tls: {
+						cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+						key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+						ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+						timeout: 5
+						verify: true
+
+						ocsp_peer: true
+					}
+				}
+			`,
+			`
+				port: -1
+				leaf: {
+					remotes: [
+						{
+							url: "nats://127.0.0.1:7444",
+							tls: {
+								cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer2_bundle.pem"
+								key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer2_keypair.pem"
+								ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+								timeout: 5
+							}
+						}
+					]
+				}
+			`,
+			0,
+		},
+		{
+			"OCSP peer check bi-directionally",
+			`
+				port: -1
+				leaf: {
+					listen: 127.0.0.1:7444
+					tls: {
+						cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+						key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+						ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+						timeout: 5
+						verify: true
+
+						ocsp_peer: true
+					}
+				}
+			`,
+			`
+				port: -1
+				leaf: {
+					remotes: [
+						{
+							url: "nats://127.0.0.1:7444",
+							tls: {
+								cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer2_bundle.pem"
+								key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer2_keypair.pem"
+								ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+								timeout: 5
+
+								ocsp_peer: true
+							}
+						}
+					]
+				}
+			`,
+			0,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			hubcontent := test.hubconfig
+			hubconf := createConfFile(t, []byte(hubcontent))
+			hub, _ := RunServerWithConfig(hubconf)
+			defer hub.Shutdown()
+
+			spokecontent := test.spokeconfig
+			spokeconf := createConfFile(t, []byte(spokecontent))
+			spoke, _ := RunServerWithConfig(spokeconf)
+			defer spoke.Shutdown()
+
+			// Need to inject some time for leaf connection attempts to complete, could refine this to better
+			// negative test
+			time.Sleep(2000 * time.Millisecond)
+
+			checkLeafNodeConnectedCount(t, hub, test.expected)
+		})
+	}
+}
+
+func checkLeafNodeConnectedCount(t testing.TB, s *server.Server, lnCons int) {
+	t.Helper()
+	checkFor(t, 5*time.Second, 15*time.Millisecond, func() error {
+		if nln := s.NumLeafNodes(); nln != lnCons {
+			return fmt.Errorf("expected %d connected leafnode(s) for server %q, got %d",
+				lnCons, s.ID(), nln)
+		}
+		return nil
+	})
 }
