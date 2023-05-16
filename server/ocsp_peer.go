@@ -250,6 +250,8 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 		return false
 	}
 
+	var err error
+
 	sLogs := &certidp.Log{
 		Debugf:  s.Debugf,
 		Noticef: s.Noticef,
@@ -261,21 +263,30 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 	// cache check here
 	fingerprint := certidp.GenerateFingerprint(link.Issuer)
 
-	s.Debugf("Cache online: %t", ocspResponseCache.Online())
+	// TODO(tgb) - should we add a no_cache bool option for each TLS ocsp_peer block?
+	// TODO(tgb) - check and implement option to allow failed CA fetch and use cached Revoked responses only...
+	// TODO(tgb) - introduce option to allow responder Unknown as "good"?
 
-	if resp := ocspResponseCache.Get(fingerprint, sLogs); resp != nil {
+	// check cache for OCSP response
+	var ocspr *ocsp.Response
+
+	if ocspr = ocspResponseCache.Get(fingerprint, sLogs); ocspr != nil {
 		// cache hit
 		s.Debugf("Cache hit for cert: %s issuer: %s", link.Leaf.Subject.CommonName, link.Issuer.Subject.CommonName)
-	}
-	// OCSP responder callout and post-evaluation as necessary
-	_, ocspr, err := certidp.FetchOCSPResponse(link, opts, sLogs)
-	if err != nil {
-		s.Debugf("OCSP response fetch error: %s", err)
-		return false
-	}
-	if ocspr == nil {
-		s.Debugf("OCSP response fetch error: nil response")
-		return false
+	} else {
+		// OCSP responder callout and post-evaluation as necessary
+		_, ocspr, err = certidp.FetchOCSPResponse(link, opts, sLogs)
+		if err != nil {
+			s.Debugf("OCSP response fetch error: %s", err)
+			return false
+		}
+		if ocspr == nil {
+			s.Debugf("OCSP response fetch error: nil response")
+			return false
+		}
+
+		// cache the OCSP Response
+		ocspResponseCache.Put(fingerprint, ocspr, sLogs)
 	}
 
 	skew := time.Duration(opts.ClockSkew * float64(time.Second))
@@ -290,6 +301,9 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 		t := ocspr.NextUpdate.Format(time.RFC3339Nano)
 		nt := now.Format(time.RFC3339Nano)
 		s.Debugf("Invalid OCSP response NextUpdate [%s] is past now [%s] with clockskew [%s]", t, nt, skew)
+
+		// expired OCSP response, purge from cache
+		ocspResponseCache.Delete(fingerprint, sLogs)
 		return false
 	}
 	if ocspr.ThisUpdate.After(now.Add(skew)) {
@@ -299,7 +313,6 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 		return false
 	}
 
-	// TODO(tgb): introduce option to allow responder Unknown as "good"?
 	if ocspr.Status != ocsp.Good {
 		s.Debugf("CA OCSP response NOT GOOD [cert: %s issuer: %s]", link.Leaf.Subject.CommonName, link.Issuer.Subject.CommonName)
 		return false

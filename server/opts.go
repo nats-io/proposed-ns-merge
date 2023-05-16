@@ -1430,10 +1430,9 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		switch vv := v.(type) {
 		case bool:
 			if vv {
-				// Set enabled with local cache default
-				// TODO(tgb) - alter true case when local cache is implemented
+				// Set enabled with memory cache default
 				pc := &OCSPResponseCacheConfig{
-					Type: certidp.NONE,
+					Type: certidp.MEMORY,
 				}
 				o.OCSPCacheConfig = pc
 			} else {

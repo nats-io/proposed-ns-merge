@@ -31,12 +31,14 @@ const (
 	NONE CacheType = iota + 1
 	SHARED
 	LOCAL
+	MEMORY
 )
 
 var CacheTypeMap = map[string]CacheType{
 	"none":   NONE,
 	"shared": SHARED,
 	"local":  LOCAL,
+	"memory": MEMORY,
 }
 
 type ChainLink struct {
@@ -73,11 +75,6 @@ For client, leaf spoke (remotes), and leaf hub connections, you may enable OCSP 
            # Allowed skew between server and OCSP responder time in seconds (may be fractional)
            allowed_clockskew: 30
            # Cache OCSP responses for the duration of the CA response validity period
-           cache: <none, shared, local>
-           # JS-enabled account name for "shared" response cache
-           account: "MY_ACCOUNT"
-           # KV-bucket name for "shared" response cache
-           bucket: "MY_BUCKET"
         }
         ...
     }

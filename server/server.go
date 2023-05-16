@@ -2035,6 +2035,9 @@ func (s *Server) Start() {
 	if !opts.DontListen {
 		s.AcceptLoop(clientListenReady)
 	}
+
+	// Bring OSCP Response cache online
+	s.startOCSPResponseCache()
 }
 
 // Shutdown will shutdown the server instance by kicking out the AcceptLoop
