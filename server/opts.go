@@ -424,6 +424,9 @@ type WebsocketOpts struct {
 	// and write the response back to the client. This include the
 	// time needed for the TLS Handshake.
 	HandshakeTimeout time.Duration
+
+	// Snapshot of configured TLS options.
+	tlsConfigOpts *TLSConfigOpts
 }
 
 // MQTTOpts are options for MQTT
@@ -504,6 +507,9 @@ type MQTTOpts struct {
 	// subscription ending with "#" will use 2 times the MaxAckPending value.
 	// Note that changes to this option is applied only to new subscriptions.
 	MaxAckPending uint16
+
+	// Snapshot of configured TLS options.
+	tlsConfigOpts *TLSConfigOpts
 }
 
 type netResolver interface {
@@ -4334,6 +4340,7 @@ func parseWebsocket(v interface{}, o *Options, errors *[]error, warnings *[]erro
 			}
 			o.Websocket.TLSMap = tc.Map
 			o.Websocket.TLSPinnedCerts = tc.PinnedCerts
+			o.Websocket.tlsConfigOpts = tc
 		case "same_origin":
 			o.Websocket.SameOrigin = mv.(bool)
 		case "allowed_origins", "allowed_origin", "allow_origins", "allow_origin", "origins", "origin":
@@ -4424,6 +4431,7 @@ func parseMQTT(v interface{}, o *Options, errors *[]error, warnings *[]error) er
 			o.MQTT.TLSTimeout = tc.Timeout
 			o.MQTT.TLSMap = tc.Map
 			o.MQTT.TLSPinnedCerts = tc.PinnedCerts
+			o.MQTT.tlsConfigOpts = tc
 		case "authorization", "authentication":
 			auth := parseSimpleAuth(tk, errors, warnings)
 			o.MQTT.Username = auth.user

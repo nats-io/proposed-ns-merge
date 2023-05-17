@@ -15,8 +15,10 @@ package test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"testing"
 	"time"
@@ -1367,6 +1369,260 @@ func TestOCSPPeerGoodClientsMemoryCache(t *testing.T) {
 				t.Errorf("Expected error getting response")
 			} else if test.rerr == nil && err != nil {
 				t.Errorf("Expected response")
+			}
+		})
+	}
+}
+
+func TestOCSPPeerMonitor(t *testing.T) {
+
+	for _, test := range []struct {
+		name               string
+		config             string
+		NATSClient         bool
+		WSClient           bool
+		MQTTClient         bool
+		LeafClient         bool
+		LeafRemotes        bool
+		NumTrueLeafRemotes int
+	}{
+		{
+			"ocsp_peer enabled on NATS client",
+			`
+				port: -1
+				http_port: 8222
+
+				tls: {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+					verify: true
+
+					# Explicit configuration
+					ocsp_peer: {
+						verify: true
+					}
+				}
+			`,
+			true,
+			false,
+			false,
+			false,
+			false,
+			0,
+		},
+		{
+			"ocsp_peer enabled on Websockets client",
+			`
+				port: -1
+				http_port: 8222
+
+				websocket: {
+					port: 8443
+
+					tls: {
+						cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+						key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+						ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+						timeout: 5
+						verify: true
+	
+						# Explicit configuration
+						ocsp_peer: {
+							verify: true
+						}
+					}
+				}
+			`,
+			false,
+			true,
+			false,
+			false,
+			false,
+			0,
+		},
+		{
+			"ocsp_peer enabled on MQTT client",
+			`
+				port: -1
+				http_port: 8222
+				server_name: "my_mqtt_server"
+
+				jetstream: {
+					enabled: true
+				}
+
+				mqtt: {
+					port: 1883
+
+					tls: {
+						cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+						key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+						ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+						timeout: 5
+						verify: true
+	
+						# Explicit configuration
+						ocsp_peer: {
+							verify: true
+						}
+					}
+				}
+			`,
+			false,
+			false,
+			true,
+			false,
+			false,
+			0,
+		},
+		{
+			"ocsp_peer enabled on Leaf client",
+			`
+				port: -1
+				http_port: 8222
+
+				leaf: {
+					port: 7422
+
+					tls: {
+						cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+						key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+						ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+						timeout: 5
+						verify: true
+	
+						# Explicit configuration
+						ocsp_peer: {
+							verify: true
+						}
+					}
+				}
+			`,
+			false,
+			false,
+			false,
+			true,
+			false,
+			0,
+		},
+		{
+			"ocsp_peer enabled on some Leaf Remotes as well as Leaf client",
+			`
+				port: -1
+				http_port: 8222
+
+				leaf: {
+					port: 7422
+
+					tls: {
+						cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+						key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+						ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+						timeout: 5
+						verify: true
+	
+						# Explicit configuration
+						ocsp_peer: {
+							verify: true
+						}
+					}
+					remotes: [
+						{
+							url: "nats-leaf://bogus:7422"
+							tls: {
+								cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+								key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+								ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+								timeout: 5
+			
+								# Explicit configuration
+								ocsp_peer: {
+									verify: true
+								}
+							}
+						},
+						{
+							url: "nats-leaf://anotherbogus:7422"
+							tls: {
+								cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+								key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+								ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+								timeout: 5
+								ocsp_peer: true
+							}
+						},
+						{
+							url: "nats-leaf://yetanotherbogus:7422"
+							tls: {
+								cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+								key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+								ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+								timeout: 5
+							}
+						}
+					]
+				}
+			`,
+			false,
+			false,
+			false,
+			true,
+			true,
+			2,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			content := test.config
+			conf := createConfFile(t, []byte(content))
+			s, _ := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			url := fmt.Sprintf("http://127.0.0.1:%d/", 8222)
+			resp, err := http.Get(url + "varz")
+			if err != nil {
+				t.Fatalf("Expected no error: Got %v\n", err)
+			}
+			if resp.StatusCode != 200 {
+				t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("Got an error reading the body: %v\n", err)
+			}
+
+			v := server.Varz{}
+			if err := json.Unmarshal(body, &v); err != nil {
+				t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+			}
+
+			if test.NATSClient {
+				if !v.TLSOCSPPeerVerify {
+					t.Fatalf("Expected NATS Client TLSOCSPPeerVerify to be true, got false")
+				}
+			}
+			if test.WSClient {
+				if !v.Websocket.TLSOCSPPeerVerify {
+					t.Fatalf("Expected WS Client TLSOCSPPeerVerify to be true, got false")
+				}
+			}
+			if test.LeafClient {
+				if !v.LeafNode.TLSOCSPPeerVerify {
+					t.Fatalf("Expected Leaf Client TLSOCSPPeerVerify to be true, got false")
+				}
+			}
+			if test.LeafRemotes {
+				cnt := 0
+				for _, r := range v.LeafNode.Remotes {
+					if r.TLSOCSPPeerVerify {
+						cnt++
+					}
+				}
+				if cnt != test.NumTrueLeafRemotes {
+					t.Fatalf("Expected %d Leaf Remotes with TLSOCSPPeerVerify true, got %d", test.NumTrueLeafRemotes, cnt)
+				}
 			}
 		})
 	}
