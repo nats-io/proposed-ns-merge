@@ -870,6 +870,7 @@ func checkLeafNodeConnectedCount(t testing.TB, s *server.Server, lnCons int) {
 }
 
 // TestOCSPPeerGoodClientsNoneCache is test of two NATS client (AIA enabled at leaf and cert) under good path (different intermediates)
+// and ocsp cache type of none (no-op)
 func TestOCSPPeerGoodClientsNoneCache(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -993,6 +994,7 @@ func TestOCSPPeerGoodClientsNoneCache(t *testing.T) {
 					}
 				}
 
+				// if set false uses cache type none
 				ocsp_cache: false
 			`,
 			[]nats.Option{
@@ -1113,8 +1115,9 @@ func TestOCSPPeerGoodClientsNoneCache(t *testing.T) {
 	}
 }
 
-// TestOCSPPeerGoodClientsMemoryCache is test of two NATS client (AIA enabled at leaf and cert) under good path (different intermediates)
-func TestOCSPPeerGoodClientsMemoryCache(t *testing.T) {
+// TestOCSPPeerGoodClientsLocalCache is test of two NATS client (AIA enabled at leaf and cert) under good path (different intermediates)
+// and leveraging the local ocsp cache type
+func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1167,6 +1170,7 @@ func TestOCSPPeerGoodClientsMemoryCache(t *testing.T) {
 					}
 				}
 
+				// default cache is local
 				ocsp_cache: true
 			`,
 			[]nats.Option{
@@ -1199,7 +1203,7 @@ func TestOCSPPeerGoodClientsMemoryCache(t *testing.T) {
 				}
 
 				ocsp_cache: {
-					type: memory
+					type: local
 				}
 			`,
 			[]nats.Option{
@@ -1236,7 +1240,7 @@ func TestOCSPPeerGoodClientsMemoryCache(t *testing.T) {
 				}
 
 				ocsp_cache: {
-					type: memory
+					type: local
 				}
 			`,
 			[]nats.Option{
@@ -1273,7 +1277,7 @@ func TestOCSPPeerGoodClientsMemoryCache(t *testing.T) {
 				}
 
 				ocsp_cache: {
-					type: memory
+					type: local
 				}
 			`,
 			[]nats.Option{
@@ -1310,7 +1314,7 @@ func TestOCSPPeerGoodClientsMemoryCache(t *testing.T) {
 				}
 
 				ocsp_cache: {
-					type: memory
+					type: local
 				}
 			`,
 			[]nats.Option{

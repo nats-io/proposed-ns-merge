@@ -46,6 +46,7 @@ type OCSPResponseCache interface {
 	Delete(fingerprint string, log *certidp.Log)
 	Type() string
 	Start(s *Server)
+	Stop(s *Server)
 	Online() bool
 	Config() *OCSPResponseCacheConfig
 }
@@ -69,6 +70,12 @@ func (c *NoOpCache) Delete(_ string, _ *certidp.Log) {
 }
 
 func (c *NoOpCache) Start(_ *Server) {
+	c.online = true
+	return
+}
+
+func (c *NoOpCache) Stop(_ *Server) {
+	c.online = false
 	return
 }
 
@@ -84,15 +91,15 @@ func (c *NoOpCache) Config() *OCSPResponseCacheConfig {
 	return c.config
 }
 
-// MemoryCache is a local server memory implementation of OCSPResponseCache
-type MemoryCache struct {
+// LocalCache is a local persistent implementation of OCSPResponseCache
+type LocalCache struct {
 	config *OCSPResponseCacheConfig
 	online bool
 	cache  map[string]*ocsp.Response
 	mux    *sync.RWMutex
 }
 
-func (c *MemoryCache) Put(fingerprint string, caResp *ocsp.Response, log *certidp.Log) {
+func (c *LocalCache) Put(fingerprint string, caResp *ocsp.Response, log *certidp.Log) {
 	if !c.online || caResp == nil || fingerprint == "" {
 		return
 	}
@@ -102,7 +109,7 @@ func (c *MemoryCache) Put(fingerprint string, caResp *ocsp.Response, log *certid
 	c.cache[fingerprint] = caResp
 }
 
-func (c *MemoryCache) Get(fingerprint string, log *certidp.Log) *ocsp.Response {
+func (c *LocalCache) Get(fingerprint string, log *certidp.Log) *ocsp.Response {
 	if !c.online || fingerprint == "" {
 		return nil
 	}
@@ -117,7 +124,7 @@ func (c *MemoryCache) Get(fingerprint string, log *certidp.Log) *ocsp.Response {
 	return val
 }
 
-func (c *MemoryCache) Delete(fingerprint string, log *certidp.Log) {
+func (c *LocalCache) Delete(fingerprint string, log *certidp.Log) {
 	if !c.online || fingerprint == "" {
 		return
 	}
@@ -127,65 +134,13 @@ func (c *MemoryCache) Delete(fingerprint string, log *certidp.Log) {
 	delete(c.cache, fingerprint)
 }
 
-func (c *MemoryCache) Start(_ *Server) {
-	return
-}
-
-func (c *MemoryCache) Online() bool {
-	return c.online
-}
-
-func (c *MemoryCache) Type() string {
-	return "memory (local server)"
-}
-
-func (c *MemoryCache) Config() *OCSPResponseCacheConfig {
-	return c.config
-}
-
-// LocalCache is a JetStream-backed implementation of OCSPResponseCache specific to this server
-type LocalCache struct {
-	config *OCSPResponseCacheConfig
-	online bool
-	s      *Server
-}
-
-func (c *LocalCache) Put(fingerprint string, _ *ocsp.Response, log *certidp.Log) {
-	return
-}
-
-func (c *LocalCache) Get(fingerprint string, log *certidp.Log) *ocsp.Response {
-	return nil
-}
-
-func (c *LocalCache) Delete(fingerprint string, log *certidp.Log) {
-	return
-}
-
-func (c *LocalCache) Start(s *Server) {
-	c.s = s
-	ocspAcct, _ := c.s.LookupOrRegisterAccount("$OCSPACCT")
-	if ocspAcct == nil {
-		c.online = false
-		c.s.Errorf("Error enabling OCSP response cache account")
-		return
-	}
-	if err := ocspAcct.EnableJetStream(nil); err != nil {
-		c.online = false
-		c.s.Errorf("Error enabling OCSP response cache account: %v", err)
-		return
-	}
-
-	client := ocspAcct.internalClient()
-	if client == nil {
-		c.online = false
-		c.s.Errorf("Error creating a local client for OCSP response cache account")
-		return
-	}
-
-	c.s.Warnf("OCSP response cache type 'local' is not yet implemented, same as none cache.")
-
+func (c *LocalCache) Start(_ *Server) {
 	c.online = true
+	return
+}
+
+func (c *LocalCache) Stop(_ *Server) {
+	c.online = false
 	return
 }
 
@@ -194,7 +149,7 @@ func (c *LocalCache) Online() bool {
 }
 
 func (c *LocalCache) Type() string {
-	return "local (KV-backed)"
+	return "local (node persistence)"
 }
 
 func (c *LocalCache) Config() *OCSPResponseCacheConfig {
@@ -210,11 +165,7 @@ For client, leaf spoke (remotes), and leaf hub connections, you may enable OCSP 
 	-OR-
 	ocsp_cache {
 	   # Cache OCSP responses for the duration of the CA response validity period
-	   type: <none, memory, local, shared>
-	   # JS-enabled account name for "shared" response cache
-	   account: "MY_ACCOUNT"
-	   # KV-bucket name for "shared" response cache
-	   bucket: "MY_BUCKET"
+	   type: <none, local>
 	}
 	...
 
@@ -239,10 +190,10 @@ func (s *Server) initOCSPResponseCache() {
 	switch cc.Type {
 	case certidp.NONE:
 		ocspResponseCache = &NoOpCache{config: cc, online: true}
-	case certidp.MEMORY:
-		ocspResponseCache = &MemoryCache{
+	case certidp.LOCAL:
+		ocspResponseCache = &LocalCache{
 			config: cc,
-			online: true,
+			online: false,
 			cache:  make(map[string]*ocsp.Response),
 			mux:    &sync.RWMutex{},
 		}
@@ -298,10 +249,6 @@ func parseOCSPResponseCache(v interface{}) (pcfg *OCSPResponseCacheConfig, retEr
 				return nil, &configErr{tk, fmt.Sprintf("error parsing ocsp cache config, unknown cache type [%s]", cache)}
 			}
 			pcfg.Type = cacheType
-		//case "account":
-		//	pcfg.AccountStr = mv.(string)
-		//case "bucket":
-		//	pcfg.BucketStr = mv.(string)
 		default:
 			return nil, &configErr{tk, "error parsing ocsp cache config, unknown field"}
 		}

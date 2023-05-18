@@ -29,16 +29,12 @@ type CacheType int
 
 const (
 	NONE CacheType = iota + 1
-	SHARED
 	LOCAL
-	MEMORY
 )
 
 var CacheTypeMap = map[string]CacheType{
-	"none":   NONE,
-	"shared": SHARED,
-	"local":  LOCAL,
-	"memory": MEMORY,
+	"none":  NONE,
+	"local": LOCAL,
 }
 
 type ChainLink struct {

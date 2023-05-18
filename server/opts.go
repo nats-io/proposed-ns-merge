@@ -1438,7 +1438,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			if vv {
 				// Set enabled with memory cache default
 				pc := &OCSPResponseCacheConfig{
-					Type: certidp.MEMORY,
+					Type: certidp.LOCAL,
 				}
 				o.OCSPCacheConfig = pc
 			} else {
