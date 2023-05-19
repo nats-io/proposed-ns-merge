@@ -26,8 +26,6 @@ import (
 	"github.com/nats-io/nats-server/v2/server/certidp"
 )
 
-var ocspPeerVerify bool
-
 func parseOCSPPeer(v interface{}) (pcfg *certidp.OCSPPeerConfig, retError error) {
 	var lt token
 	defer convertPanicToError(&lt, &retError)
@@ -267,50 +265,41 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 	// TODO(tgb) - check and implement option to allow failed CA fetch and use cached Revoked responses only...
 	// TODO(tgb) - introduce option to allow responder Unknown as "good"?
 
-	// check cache for OCSP response
+	var rawResp []byte
 	var ocspr *ocsp.Response
+	var useCachedResp bool
+	var rc = s.ocsprc
 
-	if ocspr = ocspResponseCache.Get(fingerprint, sLogs); ocspr != nil {
-		// cache hit
+	// Check our cache before calling out to the CA OCSP responder
+	if rawResp = rc.Get(fingerprint, sLogs); rawResp != nil && len(rawResp) > 0 {
 		s.Debugf("Cache hit for cert: %s issuer: %s", link.Leaf.Subject.CommonName, link.Issuer.Subject.CommonName)
-	} else {
-		// OCSP responder callout and post-evaluation as necessary
-		_, ocspr, err = certidp.FetchOCSPResponse(link, opts, sLogs)
-		if err != nil {
+		ocspr, err = ocsp.ParseResponse(rawResp, link.Issuer)
+		if err == nil && ocspr != nil {
+			if certidp.OCSPResponseCurrent(ocspr, opts, sLogs) {
+				useCachedResp = true
+			}
+		}
+	}
+
+	if !useCachedResp {
+		// CA OCSP responder callout
+		rawResp, err = certidp.FetchOCSPResponse(link, opts, sLogs)
+		if err != nil && rawResp != nil && len(rawResp) > 0 {
 			s.Debugf("OCSP response fetch error: %s", err)
 			return false
 		}
-		if ocspr == nil {
-			s.Debugf("OCSP response fetch error: nil response")
+
+		ocspr, err = ocsp.ParseResponse(rawResp, link.Issuer)
+		if err == nil && ocspr != nil {
+			if !certidp.OCSPResponseCurrent(ocspr, opts, sLogs) {
+				return false
+			}
+		} else {
 			return false
 		}
 
-		// cache the OCSP Response
-		ocspResponseCache.Put(fingerprint, ocspr, sLogs)
-	}
-
-	skew := time.Duration(opts.ClockSkew * float64(time.Second))
-	if skew <= 0*time.Second {
-		skew = certidp.AllowedClockSkew
-	}
-	// Time validation not handled by ParseResponse.
-	// https://tools.ietf.org/html/rfc6960#section-4.2.2.1
-	now := time.Now().UTC()
-
-	if !ocspr.NextUpdate.IsZero() && ocspr.NextUpdate.Before(now.Add(-1*skew)) {
-		t := ocspr.NextUpdate.Format(time.RFC3339Nano)
-		nt := now.Format(time.RFC3339Nano)
-		s.Debugf("Invalid OCSP response NextUpdate [%s] is past now [%s] with clockskew [%s]", t, nt, skew)
-
-		// expired OCSP response, purge from cache
-		ocspResponseCache.Delete(fingerprint, sLogs)
-		return false
-	}
-	if ocspr.ThisUpdate.After(now.Add(skew)) {
-		t := ocspr.ThisUpdate.Format(time.RFC3339Nano)
-		nt := now.Format(time.RFC3339Nano)
-		s.Debugf("Invalid OCSP response ThisUpdate [%s] is before now [%s] with clockskew [%s]", t, nt, skew)
-		return false
+		// cache the CA OCSP Response
+		rc.Put(fingerprint, ocspr, sLogs)
 	}
 
 	if ocspr.Status != ocsp.Good {

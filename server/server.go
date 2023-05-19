@@ -258,6 +258,12 @@ type Server struct {
 	// OCSP monitoring
 	ocsps []*OCSPMonitor
 
+	// OCSP peer verification (at least one TLS block)
+	ocspPeerVerify bool
+
+	// OCSP response cache
+	ocsprc OCSPResponseCache
+
 	// exporting account name the importer experienced issues with
 	incompleteAccExporterMap sync.Map
 
@@ -2036,7 +2042,7 @@ func (s *Server) Start() {
 		s.AcceptLoop(clientListenReady)
 	}
 
-	// Bring OSCP Response cache online
+	// Bring OSCP Response cache online after accept loop started in anticipation of NATS-enabled cache types
 	s.startOCSPResponseCache()
 }
 

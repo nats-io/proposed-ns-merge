@@ -1202,6 +1202,7 @@ type Varz struct {
 	TrustedOperatorsClaim []*jwt.OperatorClaims `json:"trusted_operators_claim,omitempty"`
 	SystemAccount         string                `json:"system_account,omitempty"`
 	PinnedAccountFail     uint64                `json:"pinned_account_fails,omitempty"`
+	OCSPResponseCache     OCSPResponseCacheVarz `json:"ocsp_response_cache,omitempty"`
 }
 
 // JetStreamVarz contains basic runtime information about jetstream
@@ -1304,6 +1305,16 @@ type WebsocketOptsVarz struct {
 	AllowedOrigins    []string      `json:"allowed_origins,omitempty"`
 	Compression       bool          `json:"compression,omitempty"`
 	TLSOCSPPeerVerify bool          `json:"tls_ocsp_peer_verify,omitempty"`
+}
+
+// OCSPResponseCacheVarz contains OCSP response cache information
+type OCSPResponseCacheVarz struct {
+	Type    string `json:"type,omitempty"`
+	Items   int64  `json:"items,omitempty"`
+	Hits    int64  `json:"hits,omitempty"`
+	Misses  int64  `json:"misses,omitempty"`
+	Revokes int64  `json:"revoked_status,omitempty"`
+	Goods   int64  `json:"good_status,omitempty"`
 }
 
 // VarzOptions are the options passed to Varz().
@@ -1457,7 +1468,9 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 	gatewayTlsReq := gw.TLSConfig != nil
 	leafTlsReq := ln.TLSConfig != nil
 	leafTlsVerify := leafTlsReq && ln.TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert
-	leafTlsOCSPPeerVerify := ocspPeerVerify && leafTlsReq && ln.tlsConfigOpts.OCSPPeerConfig != nil && ln.tlsConfigOpts.OCSPPeerConfig.Verify
+	leafTlsOCSPPeerVerify := s.ocspPeerVerify && leafTlsReq && ln.tlsConfigOpts.OCSPPeerConfig != nil && ln.tlsConfigOpts.OCSPPeerConfig.Verify
+	mqttTlsOCSPPeerVerify := s.ocspPeerVerify && mqtt.TLSConfig != nil && mqtt.tlsConfigOpts.OCSPPeerConfig != nil && mqtt.tlsConfigOpts.OCSPPeerConfig.Verify
+	wsTlsOCSPPeerVerify := s.ocspPeerVerify && ws.TLSConfig != nil && ws.tlsConfigOpts.OCSPPeerConfig != nil && ws.tlsConfigOpts.OCSPPeerConfig.Verify
 	varz := &Varz{
 		ID:           info.ID,
 		Version:      info.Version,
@@ -1515,7 +1528,7 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			JsDomain:          mqtt.JsDomain,
 			AckWait:           mqtt.AckWait,
 			MaxAckPending:     mqtt.MaxAckPending,
-			TLSOCSPPeerVerify: ocspPeerVerify && mqtt.TLSConfig != nil && mqtt.tlsConfigOpts.OCSPPeerConfig != nil && mqtt.tlsConfigOpts.OCSPPeerConfig.Verify,
+			TLSOCSPPeerVerify: mqttTlsOCSPPeerVerify,
 		},
 		Websocket: WebsocketOptsVarz{
 			Host:              ws.Host,
@@ -1530,7 +1543,7 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			AllowedOrigins:    copyStrings(ws.AllowedOrigins),
 			Compression:       ws.Compression,
 			HandshakeTimeout:  ws.HandshakeTimeout,
-			TLSOCSPPeerVerify: ocspPeerVerify && ws.TLSConfig != nil && ws.tlsConfigOpts.OCSPPeerConfig != nil && ws.tlsConfigOpts.OCSPPeerConfig.Verify,
+			TLSOCSPPeerVerify: wsTlsOCSPPeerVerify,
 		},
 		Start:                 s.start,
 		MaxSubs:               opts.MaxSubs,
@@ -1563,12 +1576,14 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 					Exports: r.DenyExports,
 				}
 			}
+			remoteTlsOCSPPeerVerify := s.ocspPeerVerify && r.tlsConfigOpts != nil && r.tlsConfigOpts.OCSPPeerConfig != nil && r.tlsConfigOpts.OCSPPeerConfig.Verify
+
 			rlna[i] = RemoteLeafOptsVarz{
 				LocalAccount:      r.LocalAccount,
 				URLs:              urlsToStrings(r.URLs),
 				TLSTimeout:        r.TLSTimeout,
 				Deny:              deny,
-				TLSOCSPPeerVerify: ocspPeerVerify && r.tlsConfigOpts != nil && r.tlsConfigOpts.OCSPPeerConfig != nil && r.tlsConfigOpts.OCSPPeerConfig.Verify,
+				TLSOCSPPeerVerify: remoteTlsOCSPPeerVerify,
 			}
 		}
 		varz.LeafNode.Remotes = rlna
@@ -1623,7 +1638,7 @@ func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
 	v.MQTT.TLSPinnedCerts = getPinnedCertsAsSlice(opts.MQTT.TLSPinnedCerts)
 	v.Websocket.TLSPinnedCerts = getPinnedCertsAsSlice(opts.Websocket.TLSPinnedCerts)
 
-	v.TLSOCSPPeerVerify = ocspPeerVerify && v.TLSRequired && s.opts.tlsConfigOpts != nil && s.opts.tlsConfigOpts.OCSPPeerConfig != nil && s.opts.tlsConfigOpts.OCSPPeerConfig.Verify
+	v.TLSOCSPPeerVerify = s.ocspPeerVerify && v.TLSRequired && s.opts.tlsConfigOpts != nil && s.opts.tlsConfigOpts.OCSPPeerConfig != nil && s.opts.tlsConfigOpts.OCSPPeerConfig.Verify
 }
 
 func getPinnedCertsAsSlice(certs PinnedCertSet) []string {
@@ -1715,6 +1730,20 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 		}
 	}
 	gw.RUnlock()
+
+	if s.ocsprc != nil && s.ocsprc.Type() != "none" {
+		stats := s.ocsprc.Stats()
+		if stats != nil {
+			v.OCSPResponseCache = OCSPResponseCacheVarz{
+				s.ocsprc.Type(),
+				stats.Items,
+				stats.Hits,
+				stats.Misses,
+				stats.Revokes,
+				stats.Goods,
+			}
+		}
+	}
 }
 
 // HandleVarz will process HTTP requests for server information.

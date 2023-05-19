@@ -18,42 +18,59 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"golang.org/x/crypto/ocsp"
 
 	"github.com/nats-io/nats-server/v2/server/certidp"
 )
 
-// TODO(tgb) - implicit account, JS enabled for the response cache and all routines
-
 type OCSPResponseCacheConfig struct {
-	Type       certidp.CacheType
-	AccountStr string
-	BucketStr  string
+	Type certidp.CacheType
 }
 
-// ocspResponseCache is the current node-host scoped OCSP response cache; default noop impl and config struct
-var ocspResponseCache OCSPResponseCache = &NoOpCache{
-	config: &OCSPResponseCacheConfig{
-		Type: certidp.NONE,
-	},
-	online: true,
+type OCSPResponseCacheStats struct {
+	Items   int64 `json:"size"`
+	Hits    int64 `json:"hits"`
+	Misses  int64 `json:"misses"`
+	Revokes int64 `json:"revokes"`
+	Goods   int64 `json:"goods"`
+}
+
+// TODO(tgb) -- needed?
+// ocspResponseCache is a default impl that will be overriden on startup opt processing
+//var ocspResponseCache OCSPResponseCache = &NoOpCache{
+//	config: &OCSPResponseCacheConfig{
+//		Type: certidp.NONE,
+//	},
+//	online: true,
+//}
+
+type OCSPResponseCacheItem struct {
+	Fingerprint string
+	CachedAt    time.Time
+	RespStatus  int
+	RespExpires time.Time
+	Resp        []byte
 }
 
 type OCSPResponseCache interface {
 	Put(fingerprint string, resp *ocsp.Response, log *certidp.Log)
-	Get(fingerprint string, log *certidp.Log) *ocsp.Response
+	Get(fingerprint string, log *certidp.Log) []byte
 	Delete(fingerprint string, log *certidp.Log)
 	Type() string
 	Start(s *Server)
 	Stop(s *Server)
 	Online() bool
 	Config() *OCSPResponseCacheConfig
+	Stats() *OCSPResponseCacheStats
 }
 
 // NoOpCache is a no-op implementation of OCSPResponseCache for consistent runtime implementation of verification
 type NoOpCache struct {
 	config *OCSPResponseCacheConfig
+	stats  *OCSPResponseCacheStats
 	online bool
 }
 
@@ -61,7 +78,7 @@ func (c *NoOpCache) Put(_ string, _ *ocsp.Response, _ *certidp.Log) {
 	return
 }
 
-func (c *NoOpCache) Get(_ string, _ *certidp.Log) *ocsp.Response {
+func (c *NoOpCache) Get(_ string, _ *certidp.Log) []byte {
 	return nil
 }
 
@@ -70,6 +87,7 @@ func (c *NoOpCache) Delete(_ string, _ *certidp.Log) {
 }
 
 func (c *NoOpCache) Start(_ *Server) {
+	c.stats = &OCSPResponseCacheStats{}
 	c.online = true
 	return
 }
@@ -84,18 +102,23 @@ func (c *NoOpCache) Online() bool {
 }
 
 func (c *NoOpCache) Type() string {
-	return "none (no-op)"
+	return "none"
 }
 
 func (c *NoOpCache) Config() *OCSPResponseCacheConfig {
 	return c.config
 }
 
+func (c *NoOpCache) Stats() *OCSPResponseCacheStats {
+	return c.stats
+}
+
 // LocalCache is a local persistent implementation of OCSPResponseCache
 type LocalCache struct {
 	config *OCSPResponseCacheConfig
+	stats  *OCSPResponseCacheStats
 	online bool
-	cache  map[string]*ocsp.Response
+	cache  map[string]OCSPResponseCacheItem
 	mux    *sync.RWMutex
 }
 
@@ -106,22 +129,31 @@ func (c *LocalCache) Put(fingerprint string, caResp *ocsp.Response, log *certidp
 	log.Debugf("Caching OCSP response for fingerprint %s", base64.StdEncoding.EncodeToString([]byte(fingerprint)))
 	c.mux.Lock()
 	defer c.mux.Unlock()
-	c.cache[fingerprint] = caResp
+	item := OCSPResponseCacheItem{
+		Fingerprint: fingerprint,
+		RespStatus:  caResp.Status,
+		Resp:        caResp.Raw,
+	}
+	c.cache[fingerprint] = item
+	c.stats.Items = int64(len(c.cache))
 }
 
-func (c *LocalCache) Get(fingerprint string, log *certidp.Log) *ocsp.Response {
+func (c *LocalCache) Get(fingerprint string, log *certidp.Log) []byte {
 	if !c.online || fingerprint == "" {
 		return nil
 	}
 	c.mux.RLock()
 	defer c.mux.RUnlock()
-	val := c.cache[fingerprint]
-	if val != nil {
+	val, ok := c.cache[fingerprint]
+	if ok {
+		atomic.AddInt64(&c.stats.Hits, 1)
 		log.Debugf("OCSP response cache hit for fingerprint %s", base64.StdEncoding.EncodeToString([]byte(fingerprint)))
 	} else {
+		atomic.AddInt64(&c.stats.Misses, 1)
 		log.Debugf("OCSP response cache miss for fingerprint %s", base64.StdEncoding.EncodeToString([]byte(fingerprint)))
+		return nil
 	}
-	return val
+	return val.Resp
 }
 
 func (c *LocalCache) Delete(fingerprint string, log *certidp.Log) {
@@ -132,15 +164,24 @@ func (c *LocalCache) Delete(fingerprint string, log *certidp.Log) {
 	c.mux.Lock()
 	defer c.mux.Unlock()
 	delete(c.cache, fingerprint)
+	c.stats.Items = int64(len(c.cache))
 }
 
-func (c *LocalCache) Start(_ *Server) {
+func (c *LocalCache) Start(s *Server) {
+	s.Debugf("Starting OCSP Response Cache...")
+	// TODO(tgb) -- hydrate cache from disk here
+	c.stats = &OCSPResponseCacheStats{}
+	c.stats.Hits = 0
+	c.stats.Misses = 0
+	c.stats.Items = int64(len(c.cache))
 	c.online = true
 	return
 }
 
-func (c *LocalCache) Stop(_ *Server) {
+func (c *LocalCache) Stop(s *Server) {
+	s.Debugf("Stopping OCSP Response Cache...")
 	c.online = false
+	// TODO(tgb) -- dehydrate cache to disk here
 	return
 }
 
@@ -149,11 +190,27 @@ func (c *LocalCache) Online() bool {
 }
 
 func (c *LocalCache) Type() string {
-	return "local (node persistence)"
+	return "local"
 }
 
 func (c *LocalCache) Config() *OCSPResponseCacheConfig {
 	return c.config
+}
+
+func (c *LocalCache) Stats() *OCSPResponseCacheStats {
+	if c.stats == nil {
+		return nil
+	}
+	c.mux.RLock()
+	stats := OCSPResponseCacheStats{
+		Items:   c.stats.Items,
+		Hits:    c.stats.Hits,
+		Misses:  c.stats.Misses,
+		Revokes: c.stats.Revokes,
+		Goods:   c.stats.Goods,
+	}
+	c.mux.RUnlock()
+	return &stats
 }
 
 var _ = `
@@ -174,7 +231,7 @@ Note: Cache of server's own OCSP response (staple) is enabled using the 'ocsp' s
 
 func (s *Server) initOCSPResponseCache() {
 	// No mTLS OCSP or Leaf OCSP enablements, so no need to init cache
-	if !ocspPeerVerify {
+	if !s.ocspPeerVerify {
 		return
 	}
 
@@ -189,12 +246,12 @@ func (s *Server) initOCSPResponseCache() {
 
 	switch cc.Type {
 	case certidp.NONE:
-		ocspResponseCache = &NoOpCache{config: cc, online: true}
+		s.ocsprc = &NoOpCache{config: cc, online: true}
 	case certidp.LOCAL:
-		ocspResponseCache = &LocalCache{
+		s.ocsprc = &LocalCache{
 			config: cc,
 			online: false,
-			cache:  make(map[string]*ocsp.Response),
+			cache:  make(map[string]OCSPResponseCacheItem),
 			mux:    &sync.RWMutex{},
 		}
 	default:
@@ -204,18 +261,18 @@ func (s *Server) initOCSPResponseCache() {
 
 func (s *Server) startOCSPResponseCache() {
 	// No mTLS OCSP or Leaf OCSP enablements, so no need to start cache
-	if !ocspPeerVerify {
+	if !s.ocspPeerVerify || s.ocsprc == nil {
 		return
 	}
 
 	// Starting the cache means different things depending on the selected implementation
 	// from no-op to setting up NATS KV Client, and potentially creation of a Bucket
-	ocspResponseCache.Start(s)
+	s.ocsprc.Start(s)
 
-	if ocspResponseCache.Online() {
-		s.Noticef("OCSP response cache online, type: %s", ocspResponseCache.Type())
+	if s.ocsprc.Online() {
+		s.Noticef("OCSP response cache online, type: %s", s.ocsprc.Type())
 	} else {
-		s.Noticef("OCSP response cache offline, type: %s", ocspResponseCache.Type())
+		s.Noticef("OCSP response cache offline, type: %s", s.ocsprc.Type())
 	}
 }
 
@@ -253,8 +310,6 @@ func parseOCSPResponseCache(v interface{}) (pcfg *OCSPResponseCacheConfig, retEr
 			return nil, &configErr{tk, "error parsing ocsp cache config, unknown field"}
 		}
 	}
-
-	// TODO(tgb) - validate type against necessary related configurations by operator
 
 	return pcfg, nil
 }

@@ -1147,13 +1147,11 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 		configure func()
 	}{
 		{
-			"Default cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
+			"Default cache: mTLS OCSP peer check on inbound client connection, UserA1 client of intermediate CA 1",
 			`
 				port: -1
 				
-				jetstream: {
-					enabled: true
-				}
+				http_port: 8222
 
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
@@ -1183,13 +1181,11 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 			func() {},
 		},
 		{
-			"Default cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 2",
+			"Local cache: mTLS OCSP peer check on inbound client connection, UserB1 client of intermediate CA 2",
 			`
 				port: -1
 
-				jetstream: {
-					enabled: true
-				}
+				http_port: 8222
 
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
@@ -1208,117 +1204,6 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 			`,
 			[]nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client2/UserB1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client2/private/UserB1_keypair.pem"),
-				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
-				nats.ErrorHandler(noOpErrHandler),
-			},
-			nil,
-			nil,
-			func() {},
-		},
-		{
-			"explicit false cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
-			`
-				port: -1
-
-				jetstream: {
-					enabled: true
-				}
-
-				tls: {
-					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
-					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
-					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
-					timeout: 5
-					verify: true
-
-					# Explicit configuration
-					ocsp_peer: {
-						verify: true
-						ca_timeout: 5
-						allowed_clockskew: 30
-					}
-				}
-
-				ocsp_cache: {
-					type: local
-				}
-			`,
-			[]nats.Option{
-				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
-				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
-				nats.ErrorHandler(noOpErrHandler),
-			},
-			nil,
-			nil,
-			func() {},
-		},
-		{
-			"explicit true cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
-			`
-				port: -1
-
-				jetstream: {
-					enabled: true
-				}
-
-				tls: {
-					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
-					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
-					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
-					timeout: 5
-					verify: true
-
-					# Explicit configuration
-					ocsp_peer: {
-						verify: true
-						ca_timeout: 5
-						allowed_clockskew: 30
-					}
-				}
-
-				ocsp_cache: {
-					type: local
-				}
-			`,
-			[]nats.Option{
-				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
-				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
-				nats.ErrorHandler(noOpErrHandler),
-			},
-			nil,
-			nil,
-			func() {},
-		},
-		{
-			"none cache config: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
-			`
-				port: -1
-
-				jetstream: {
-					enabled: true
-				}
-
-				tls: {
-					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
-					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
-					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
-					timeout: 5
-					verify: true
-
-					# Explicit configuration
-					ocsp_peer: {
-						verify: true
-						ca_timeout: 5
-						allowed_clockskew: 30
-					}
-				}
-
-				ocsp_cache: {
-					type: local
-				}
-			`,
-			[]nats.Option{
-				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
 				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			},
@@ -1348,6 +1233,12 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 			}
 			nc.Close()
 
+			v := monitorGetVarzHelper(t, 8222)
+
+			if v.OCSPResponseCache.Misses != 2 && v.OCSPResponseCache.Items != 2 {
+				t.Errorf("Expected cache misses and cache items to be 2, got %d and %d", v.OCSPResponseCache.Misses, v.OCSPResponseCache.Items)
+			}
+
 			// Should get a cache hit now
 			nc, err = nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port), test.opts...)
 			if test.err == nil && err != nil {
@@ -1373,6 +1264,12 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 				t.Errorf("Expected error getting response")
 			} else if test.rerr == nil && err != nil {
 				t.Errorf("Expected response")
+			}
+
+			v = monitorGetVarzHelper(t, 8222)
+
+			if v.OCSPResponseCache.Misses != 2 && v.OCSPResponseCache.Hits != 2 && v.OCSPResponseCache.Items != 2 {
+				t.Errorf("Expected cache misses, hits and cache items to be 2, got %d and %d and %d", v.OCSPResponseCache.Misses, v.OCSPResponseCache.Hits, v.OCSPResponseCache.Items)
 			}
 		})
 	}
@@ -1583,24 +1480,7 @@ func TestOCSPPeerMonitor(t *testing.T) {
 			s, _ := RunServerWithConfig(conf)
 			defer s.Shutdown()
 
-			url := fmt.Sprintf("http://127.0.0.1:%d/", 8222)
-			resp, err := http.Get(url + "varz")
-			if err != nil {
-				t.Fatalf("Expected no error: Got %v\n", err)
-			}
-			if resp.StatusCode != 200 {
-				t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
-			}
-			defer resp.Body.Close()
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				t.Fatalf("Got an error reading the body: %v\n", err)
-			}
-
-			v := server.Varz{}
-			if err := json.Unmarshal(body, &v); err != nil {
-				t.Fatalf("Got an error unmarshalling the body: %v\n", err)
-			}
+			v := monitorGetVarzHelper(t, 8222)
 
 			if test.NATSClient {
 				if !v.TLSOCSPPeerVerify {
@@ -1630,4 +1510,72 @@ func TestOCSPPeerMonitor(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOCSPResponseCacheMonitor(t *testing.T) {
+
+	for _, test := range []struct {
+		name   string
+		config string
+	}{
+		{
+			"ocsp_peer enabled on NATS client",
+			`
+				port: -1
+				http_port: 8222
+
+				tls: {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+					verify: true
+
+					# Explicit configuration
+					ocsp_peer: {
+						verify: true
+					}
+				}
+
+				ocsp_cache: true
+			`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			content := test.config
+			conf := createConfFile(t, []byte(content))
+			s, _ := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			v := monitorGetVarzHelper(t, 8222)
+
+			if v.OCSPResponseCache.Type == "" {
+				t.Fatalf("Expected OCSP Response Cache to have a type")
+			}
+		})
+	}
+}
+
+func monitorGetVarzHelper(t *testing.T, httpPort int) *server.Varz {
+	t.Helper()
+	url := fmt.Sprintf("http://127.0.0.1:%d/", httpPort)
+	resp, err := http.Get(url + "varz")
+	if err != nil {
+		t.Fatalf("Expected no error: Got %v\n", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Got an error reading the body: %v\n", err)
+	}
+
+	v := server.Varz{}
+	if err := json.Unmarshal(body, &v); err != nil {
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+	}
+
+	return &v
 }

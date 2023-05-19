@@ -24,9 +24,9 @@ import (
 	"golang.org/x/crypto/ocsp"
 )
 
-func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte, *ocsp.Response, error) {
+func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte, error) {
 	if link == nil || link.Leaf == nil || link.Issuer == nil || opts == nil || log == nil {
-		return nil, nil, fmt.Errorf("invalid chain link")
+		return nil, fmt.Errorf("invalid chain link")
 	}
 
 	timeout := time.Duration(opts.Timeout * float64(time.Second))
@@ -52,7 +52,7 @@ func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte,
 
 	reqDER, err := ocsp.CreateRequest(link.Leaf, link.Issuer, nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	reqEnc := base64.StdEncoding.EncodeToString(reqDER)
@@ -60,7 +60,7 @@ func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte,
 	responders := *link.OCSPWebEndpoints
 
 	if len(responders) == 0 {
-		return nil, nil, fmt.Errorf("no available ocsp servers")
+		return nil, fmt.Errorf("no available ocsp servers")
 	}
 
 	var raw []byte
@@ -78,13 +78,8 @@ func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte,
 		}
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("exhausted OCSP responders: %w", err)
+		return nil, fmt.Errorf("exhausted OCSP responders: %w", err)
 	}
 
-	resp, err := ocsp.ParseResponse(raw, link.Issuer)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to Get remote status: %w", err)
-	}
-
-	return raw, resp, nil
+	return raw, nil
 }

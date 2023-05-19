@@ -18,6 +18,8 @@ import (
 	"crypto/x509"
 	"net/url"
 	"time"
+
+	"golang.org/x/crypto/ocsp"
 )
 
 const (
@@ -127,4 +129,29 @@ func GetLeafIssuerCert(chain *[]*x509.Certificate, leafPos int) *x509.Certificat
 	}
 	// returns pointer to issuer cert or nil
 	return (*chain)[leafPos+1]
+}
+
+// OCSPResponseCurrent checks if the OCSP response is current (i.e. not expired and not future effective)
+func OCSPResponseCurrent(ocspr *ocsp.Response, opts *OCSPPeerConfig, log *Log) bool {
+	skew := time.Duration(opts.ClockSkew * float64(time.Second))
+	if skew <= 0*time.Second {
+		skew = AllowedClockSkew
+	}
+	// Time validation not handled by ParseResponse.
+	// https://tools.ietf.org/html/rfc6960#section-4.2.2.1
+	now := time.Now().UTC()
+
+	if !ocspr.NextUpdate.IsZero() && ocspr.NextUpdate.Before(now.Add(-1*skew)) {
+		t := ocspr.NextUpdate.Format(time.RFC3339Nano)
+		nt := now.Format(time.RFC3339Nano)
+		log.Debugf("Invalid OCSP response NextUpdate [%s] is past now [%s] with clockskew [%s]", t, nt, skew)
+		return false
+	}
+	if ocspr.ThisUpdate.After(now.Add(skew)) {
+		t := ocspr.ThisUpdate.Format(time.RFC3339Nano)
+		nt := now.Format(time.RFC3339Nano)
+		log.Debugf("Invalid OCSP response ThisUpdate [%s] is before now [%s] with clockskew [%s]", t, nt, skew)
+		return false
+	}
+	return true
 }
