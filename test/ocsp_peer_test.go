@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
@@ -1553,6 +1554,72 @@ func TestOCSPResponseCacheMonitor(t *testing.T) {
 				t.Fatalf("Expected OCSP Response Cache to have a type")
 			}
 		})
+	}
+}
+
+func TestOCSPResponseCacheChangeAndReload(t *testing.T) {
+	// Start with ocsp cache set to none
+	content := `
+		port: -1
+
+		http_port: 8222
+
+		tls {
+			cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+			key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+			ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+			timeout: 5
+			verify: true
+
+			ocsp_peer: true
+		}
+
+		ocsp_cache: {
+			type: none
+		}
+	`
+	conf := createConfFile(t, []byte(content))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	v := monitorGetVarzHelper(t, 8222)
+
+	if v.OCSPResponseCache.Type != "" {
+		t.Fatalf("Expected OCSP Response Cache to have empty type in varz indicating none")
+	}
+
+	// Change and disable OCSP Stapling.
+	content = `
+		port: -1
+
+		http_port: 8222
+
+		tls {
+			cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+			key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+			ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+			timeout: 5
+			verify: true
+
+			ocsp_peer: true
+		}
+
+		ocsp_cache: {
+			type: local
+		}
+	`
+	if err := os.WriteFile(conf, []byte(content), 0666); err != nil {
+		t.Fatalf("Error writing config: %v", err)
+	}
+	if err := s.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Second)
+
+	v = monitorGetVarzHelper(t, 8222)
+
+	if v.OCSPResponseCache.Type != "local" {
+		t.Fatalf("Expected OCSP Response Cache type to be local, got %q", v.OCSPResponseCache.Type)
 	}
 }
 

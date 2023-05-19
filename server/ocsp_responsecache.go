@@ -38,15 +38,6 @@ type OCSPResponseCacheStats struct {
 	Goods   int64 `json:"goods"`
 }
 
-// TODO(tgb) -- needed?
-// ocspResponseCache is a default impl that will be overriden on startup opt processing
-//var ocspResponseCache OCSPResponseCache = &NoOpCache{
-//	config: &OCSPResponseCacheConfig{
-//		Type: certidp.NONE,
-//	},
-//	online: true,
-//}
-
 type OCSPResponseCacheItem struct {
 	Fingerprint string
 	CachedAt    time.Time
@@ -274,6 +265,15 @@ func (s *Server) startOCSPResponseCache() {
 	} else {
 		s.Noticef("OCSP response cache offline, type: %s", s.ocsprc.Type())
 	}
+}
+
+func (s *Server) stopOCSPResponseCache() {
+	if s.ocsprc == nil {
+		return
+	}
+	// Stopping the cache means different things depending on the selected implementation
+	s.Noticef("Stopping OCSP response cache...")
+	s.ocsprc.Stop(s)
 }
 
 func parseOCSPResponseCache(v interface{}) (pcfg *OCSPResponseCacheConfig, retError error) {

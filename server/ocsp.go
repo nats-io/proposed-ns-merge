@@ -692,20 +692,39 @@ func (s *Server) reloadOCSP() error {
 
 	configs := s.configureOCSP()
 
-	// TODO(tgb) Implement same as in enableOCSP() for mTLS OCSP (server validates client) plus Leaf spoke validating hub (client validates server)
 	// Restart the monitors under the new configuration.
 	ocspm := make([]*OCSPMonitor, 0)
-	for _, config := range configs {
-		tc, mon, err := s.NewOCSPMonitor(config)
-		if err != nil {
-			return err
-		}
-		// Check if an OCSP stapling monitor is required for this certificate.
-		if mon != nil {
-			ocspm = append(ocspm, mon)
 
-			// Apply latest TLS configuration.
-			config.apply(tc)
+	// Reset server's ocspPeerVerify flag to re-detect at least one plugged OCSP peer
+	s.ocspPeerVerify = false
+	s.stopOCSPResponseCache()
+
+	for _, config := range configs {
+		// We do not staple Leaf Hub and Leaf Spokes, use ocsp_peer
+		if config.kind != kindStringMap[LEAF] {
+			tc, mon, err := s.NewOCSPMonitor(config)
+			if err != nil {
+				return err
+			}
+			// Check if an OCSP stapling monitor is required for this certificate.
+			if mon != nil {
+				ocspm = append(ocspm, mon)
+
+				// Apply latest TLS configuration.
+				config.apply(tc)
+			}
+		}
+
+		// OCSP peer check (client mTLS, leaf mTLS, leaf remote TLS)
+		if config.kind == kindStringMap[CLIENT] || config.kind == kindStringMap[LEAF] {
+			tc, plugged, err := s.plugTLSOCSPPeer(config)
+			if err != nil {
+				return err
+			}
+			if plugged && tc != nil {
+				s.ocspPeerVerify = true
+				config.apply(tc)
+			}
 		}
 	}
 
@@ -716,6 +735,10 @@ func (s *Server) reloadOCSP() error {
 
 	// Dispatch all goroutines once again.
 	s.startOCSPMonitoring()
+
+	// Init and start OCSP responder cache
+	s.initOCSPResponseCache()
+	s.startOCSPResponseCache()
 
 	return nil
 }

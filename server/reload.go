@@ -660,12 +660,21 @@ func (jso jetStreamOption) IsStatszChange() bool {
 }
 
 type ocspOption struct {
-	noopOption
+	tlsOption
 	newValue *OCSPConfig
 }
 
 func (a *ocspOption) Apply(s *Server) {
 	s.Noticef("Reloaded: OCSP")
+}
+
+type ocspResponseCacheOption struct {
+	tlsOption
+	newValue *OCSPResponseCacheConfig
+}
+
+func (a *ocspResponseCacheOption) Apply(s *Server) {
+	s.Noticef("Reloaded: OCSP Response Cache")
 }
 
 // connectErrorReports implements the option interface for the `connect_error_reports`
@@ -1427,6 +1436,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			}
 		case "ocspconfig":
 			diffOpts = append(diffOpts, &ocspOption{newValue: newValue.(*OCSPConfig)})
+		case "ocspcacheconfig":
+			diffOpts = append(diffOpts, &ocspResponseCacheOption{newValue: newValue.(*OCSPResponseCacheConfig)})
 		default:
 			// TODO(ik): Implement String() on those options to have a nice print.
 			// %v is difficult to figure what's what, %+v print private fields and
@@ -1571,10 +1582,16 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		s.updateRemoteLeafNodesTLSConfig(newOpts)
 	}
 
+	// This will fire if TLS enabled at root (NATS listener) -or- if ocsp or ocsp_cache
+	// appear in the config.
+	//
+	// TODO(TGB): There is an existing flaw in reload change parsing that ignores changes
+	// to nested TLS config blocks. Obscured by the fact that typically if TLS is enabled
+	// anywhere, the root-level TLS config (NATS client) is enabled and "reloadTLS" will be true.
 	if reloadTLS {
 		// Restart OCSP monitoring.
 		if err := s.reloadOCSP(); err != nil {
-			s.Warnf("Can't restart OCSP Stapling: %v", err)
+			s.Warnf("Can't restart OCSP features: %v", err)
 		}
 	}
 
