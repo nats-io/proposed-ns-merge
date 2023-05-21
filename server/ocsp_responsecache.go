@@ -14,13 +14,16 @@
 package server
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/klauspost/compress/s2"
 	"golang.org/x/crypto/ocsp"
 
 	"github.com/nats-io/nats-server/v2/server/certidp"
@@ -118,12 +121,18 @@ func (c *LocalCache) Put(fingerprint string, caResp *ocsp.Response, log *certidp
 		return
 	}
 	log.Debugf("Caching OCSP response for fingerprint %s", base64.StdEncoding.EncodeToString([]byte(fingerprint)))
+	rawC, err := c.Compress(caResp.Raw)
+	if err != nil {
+		log.Errorf("Error compressing OCSP response for fingerprint %s: %s", base64.StdEncoding.EncodeToString([]byte(fingerprint)), err)
+		return
+	}
+	log.Debugf("OCSP response compression ratio: %f", float64(len(rawC))/float64(len(caResp.Raw)))
 	c.mux.Lock()
 	defer c.mux.Unlock()
 	item := OCSPResponseCacheItem{
 		Fingerprint: fingerprint,
 		RespStatus:  caResp.Status,
-		Resp:        caResp.Raw,
+		Resp:        rawC,
 	}
 	c.cache[fingerprint] = item
 	c.stats.Items = int64(len(c.cache))
@@ -144,7 +153,12 @@ func (c *LocalCache) Get(fingerprint string, log *certidp.Log) []byte {
 		log.Debugf("OCSP response cache miss for fingerprint %s", base64.StdEncoding.EncodeToString([]byte(fingerprint)))
 		return nil
 	}
-	return val.Resp
+	resp, err := c.Decompress(val.Resp)
+	if err != nil {
+		log.Errorf("Error decompressing OCSP response for fingerprint %s: %s", base64.StdEncoding.EncodeToString([]byte(fingerprint)), err)
+		return nil
+	}
+	return resp
 }
 
 func (c *LocalCache) Delete(fingerprint string, log *certidp.Log) {
@@ -202,6 +216,35 @@ func (c *LocalCache) Stats() *OCSPResponseCacheStats {
 	}
 	c.mux.RUnlock()
 	return &stats
+}
+
+func (c *LocalCache) Compress(buf []byte) ([]byte, error) {
+	bodyLen := int64(len(buf))
+	var output bytes.Buffer
+	var writer io.WriteCloser
+	writer = s2.NewWriter(&output)
+	input := bytes.NewReader(buf[:bodyLen])
+	if n, err := io.CopyN(writer, input, bodyLen); err != nil {
+		return nil, fmt.Errorf("error writing to compression writer: %w", err)
+	} else if n != bodyLen {
+		return nil, fmt.Errorf("short write on body (%d != %d)", n, bodyLen)
+	}
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("error closing compression writer: %w", err)
+	}
+	return output.Bytes(), nil
+}
+
+func (c *LocalCache) Decompress(buf []byte) ([]byte, error) {
+	bodyLen := int64(len(buf))
+	input := bytes.NewReader(buf[:bodyLen])
+	var reader io.ReadCloser
+	reader = io.NopCloser(s2.NewReader(input))
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("error reading compression reader: %w", err)
+	}
+	return output, reader.Close()
 }
 
 var _ = `
