@@ -478,8 +478,8 @@ func NewServer(opts *Options) (*Server, error) {
 	// Ensure that non-exported options (used in tests) are properly set.
 	s.setLeafNodeNonExportedOptions()
 
-	// Setup OCSP Stapling. This will abort server from starting if there
-	// are no valid staples and OCSP policy is set to Always or MustStaple.
+	// Setup OCSP Stapling and OCSP Peer. This will abort server from starting if there
+	// are no valid staples and OCSP Stapling policy is set to Always or MustStaple.
 	if err := s.enableOCSP(); err != nil {
 		return nil, err
 	}
@@ -2206,6 +2206,12 @@ func (s *Server) Shutdown() {
 	}
 
 	s.Noticef("Server Exiting..")
+
+	// Stop OCSP Response Cache
+	if s.ocsprc != nil {
+		s.ocsprc.Stop(s)
+	}
+
 	// Close logger if applicable. It allows tests on Windows
 	// to be able to do proper cleanup (delete log file).
 	s.logging.RLock()

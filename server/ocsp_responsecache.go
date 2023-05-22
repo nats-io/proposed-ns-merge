@@ -16,8 +16,10 @@ package server
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,18 +43,20 @@ type OCSPResponseCacheStats struct {
 	Goods   int64 `json:"goods"`
 }
 
+type Fingerprint string
+
 type OCSPResponseCacheItem struct {
-	Fingerprint string
-	CachedAt    time.Time
-	RespStatus  int
-	RespExpires time.Time
-	Resp        []byte
+	// Fingerprint string    `json:"fingerprint"`
+	CachedAt    time.Time `json:"cached_at"`
+	RespStatus  int       `json:"resp_status"`
+	RespExpires time.Time `json:"resp_expires,omitempty"`
+	Resp        []byte    `json:"resp"`
 }
 
 type OCSPResponseCache interface {
-	Put(fingerprint string, resp *ocsp.Response, log *certidp.Log)
-	Get(fingerprint string, log *certidp.Log) []byte
-	Delete(fingerprint string, log *certidp.Log)
+	Put(key certidp.Fingerprint, resp *ocsp.Response, log *certidp.Log)
+	Get(key certidp.Fingerprint, log *certidp.Log) []byte
+	Delete(key certidp.Fingerprint, log *certidp.Log)
 	Type() string
 	Start(s *Server)
 	Stop(s *Server)
@@ -68,15 +72,15 @@ type NoOpCache struct {
 	online bool
 }
 
-func (c *NoOpCache) Put(_ string, _ *ocsp.Response, _ *certidp.Log) {
+func (c *NoOpCache) Put(_ certidp.Fingerprint, _ *ocsp.Response, _ *certidp.Log) {
 	return
 }
 
-func (c *NoOpCache) Get(_ string, _ *certidp.Log) []byte {
+func (c *NoOpCache) Get(_ certidp.Fingerprint, _ *certidp.Log) []byte {
 	return nil
 }
 
-func (c *NoOpCache) Delete(_ string, _ *certidp.Log) {
+func (c *NoOpCache) Delete(_ certidp.Fingerprint, _ *certidp.Log) {
 	return
 }
 
@@ -112,69 +116,69 @@ type LocalCache struct {
 	config *OCSPResponseCacheConfig
 	stats  *OCSPResponseCacheStats
 	online bool
-	cache  map[string]OCSPResponseCacheItem
+	cache  map[certidp.Fingerprint]OCSPResponseCacheItem
 	mux    *sync.RWMutex
 }
 
-func (c *LocalCache) Put(fingerprint string, caResp *ocsp.Response, log *certidp.Log) {
-	if !c.online || caResp == nil || fingerprint == "" {
+func (c *LocalCache) Put(key certidp.Fingerprint, caResp *ocsp.Response, log *certidp.Log) {
+	if !c.online || caResp == nil || key == "" {
 		return
 	}
-	log.Debugf("Caching OCSP response for fingerprint %s", base64.StdEncoding.EncodeToString([]byte(fingerprint)))
+	log.Debugf("Caching OCSP response for key %s", base64.StdEncoding.EncodeToString([]byte(key)))
 	rawC, err := c.Compress(caResp.Raw)
 	if err != nil {
-		log.Errorf("Error compressing OCSP response for fingerprint %s: %s", base64.StdEncoding.EncodeToString([]byte(fingerprint)), err)
+		log.Errorf("Error compressing OCSP response for key %s: %s", base64.StdEncoding.EncodeToString([]byte(key)), err)
 		return
 	}
 	log.Debugf("OCSP response compression ratio: %f", float64(len(rawC))/float64(len(caResp.Raw)))
 	c.mux.Lock()
 	defer c.mux.Unlock()
 	item := OCSPResponseCacheItem{
-		Fingerprint: fingerprint,
-		RespStatus:  caResp.Status,
-		Resp:        rawC,
+		// Fingerprint: key,
+		RespStatus: caResp.Status,
+		Resp:       rawC,
 	}
-	c.cache[fingerprint] = item
+	c.cache[key] = item
 	c.stats.Items = int64(len(c.cache))
 }
 
-func (c *LocalCache) Get(fingerprint string, log *certidp.Log) []byte {
-	if !c.online || fingerprint == "" {
+func (c *LocalCache) Get(key certidp.Fingerprint, log *certidp.Log) []byte {
+	if !c.online || key == "" {
 		return nil
 	}
 	c.mux.RLock()
 	defer c.mux.RUnlock()
-	val, ok := c.cache[fingerprint]
+	val, ok := c.cache[key]
 	if ok {
 		atomic.AddInt64(&c.stats.Hits, 1)
-		log.Debugf("OCSP response cache hit for fingerprint %s", base64.StdEncoding.EncodeToString([]byte(fingerprint)))
+		log.Debugf("OCSP response cache hit for key %s", base64.StdEncoding.EncodeToString([]byte(key)))
 	} else {
 		atomic.AddInt64(&c.stats.Misses, 1)
-		log.Debugf("OCSP response cache miss for fingerprint %s", base64.StdEncoding.EncodeToString([]byte(fingerprint)))
+		log.Debugf("OCSP response cache miss for key %s", base64.StdEncoding.EncodeToString([]byte(key)))
 		return nil
 	}
 	resp, err := c.Decompress(val.Resp)
 	if err != nil {
-		log.Errorf("Error decompressing OCSP response for fingerprint %s: %s", base64.StdEncoding.EncodeToString([]byte(fingerprint)), err)
+		log.Errorf("Error decompressing OCSP response for key %s: %s", base64.StdEncoding.EncodeToString([]byte(key)), err)
 		return nil
 	}
 	return resp
 }
 
-func (c *LocalCache) Delete(fingerprint string, log *certidp.Log) {
-	if !c.online || fingerprint == "" {
+func (c *LocalCache) Delete(key certidp.Fingerprint, log *certidp.Log) {
+	if !c.online || key == "" {
 		return
 	}
-	log.Debugf("Deleting OCSP response for fingerprint %s", base64.StdEncoding.EncodeToString([]byte(fingerprint)))
+	log.Debugf("Deleting OCSP response for key %s", base64.StdEncoding.EncodeToString([]byte(key)))
 	c.mux.Lock()
 	defer c.mux.Unlock()
-	delete(c.cache, fingerprint)
+	delete(c.cache, key)
 	c.stats.Items = int64(len(c.cache))
 }
 
 func (c *LocalCache) Start(s *Server) {
-	s.Debugf("Starting OCSP Response Cache...")
-	// TODO(tgb) -- hydrate cache from disk here
+	s.Debugf("Starting OCSP response cache")
+	c.loadCache(s)
 	c.stats = &OCSPResponseCacheStats{}
 	c.stats.Hits = 0
 	c.stats.Misses = 0
@@ -184,9 +188,9 @@ func (c *LocalCache) Start(s *Server) {
 }
 
 func (c *LocalCache) Stop(s *Server) {
-	s.Debugf("Stopping OCSP Response Cache...")
+	s.Debugf("Stopping OCSP response cache")
 	c.online = false
-	// TODO(tgb) -- dehydrate cache to disk here
+	c.saveCache(s)
 	return
 }
 
@@ -247,6 +251,44 @@ func (c *LocalCache) Decompress(buf []byte) ([]byte, error) {
 	return output, reader.Close()
 }
 
+func (c *LocalCache) loadCache(s *Server) {
+	s.Noticef("Loading OCSP response cache")
+	c.mux.Lock()
+	defer c.mux.Unlock()
+	// TODO(tgb) - real file name and location semantics
+	dat, err := os.ReadFile("/tmp/file.json")
+	// TODO(tgb) - check for no file found
+	if err != nil {
+		s.Warnf("unable to load OCSP response cache: %w", err)
+		return
+	}
+	c.cache = make(map[certidp.Fingerprint]OCSPResponseCacheItem)
+	err = json.Unmarshal(dat, &c.cache)
+	if err != nil {
+		// empty cache
+		c.cache = make(map[certidp.Fingerprint]OCSPResponseCacheItem)
+		s.Warnf("unable to load OCSP response cache: %w", err)
+		return
+	}
+}
+
+func (c *LocalCache) saveCache(s *Server) {
+	s.Noticef("Saving OCSP response cache")
+	c.mux.RLock()
+	defer c.mux.RUnlock()
+	dat, err := json.MarshalIndent(c.cache, "", " ")
+	if err != nil {
+		s.Errorf("unable to save OCSP response cache: %w", err)
+		return
+	}
+	// TODO(tgb) - real file name and location semantics and no-foul write
+	err = os.WriteFile("/tmp/file.json", dat, 0644)
+	if err != nil {
+		s.Errorf("unable to save OCSP response cache: %w", err)
+		return
+	}
+}
+
 var _ = `
 For client, leaf spoke (remotes), and leaf hub connections, you may enable OCSP response cacheing:
 
@@ -285,7 +327,7 @@ func (s *Server) initOCSPResponseCache() {
 		s.ocsprc = &LocalCache{
 			config: cc,
 			online: false,
-			cache:  make(map[string]OCSPResponseCacheItem),
+			cache:  make(map[certidp.Fingerprint]OCSPResponseCacheItem),
 			mux:    &sync.RWMutex{},
 		}
 	default:
