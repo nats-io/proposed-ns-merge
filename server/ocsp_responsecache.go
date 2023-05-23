@@ -34,12 +34,13 @@ import (
 )
 
 const (
-	OCSPResponseCacheDefaultDir      = "ocsp_cache"
+	OCSPResponseCacheDefaultDir      = "_rc_"
 	OCSPResponseCacheDefaultFilename = "cache.json"
 )
 
 type OCSPResponseCacheConfig struct {
-	Type certidp.CacheType
+	Type       certidp.CacheType
+	LocalStore string
 }
 
 type OCSPResponseCacheStats struct {
@@ -255,7 +256,10 @@ func (c *LocalCache) Decompress(buf []byte) ([]byte, error) {
 }
 
 func (c *LocalCache) loadCache(s *Server) {
-	d := OCSPResponseCacheDefaultDir
+	d := s.opts.OCSPCacheConfig.LocalStore
+	if d == "" {
+		d = OCSPResponseCacheDefaultDir
+	}
 	f := OCSPResponseCacheDefaultFilename
 	store, err := filepath.Abs(path.Join(d, f))
 	if err != nil {
@@ -294,7 +298,7 @@ func (c *LocalCache) saveCache(s *Server) {
 	}
 	s.Noticef("Saving OCSP response cache [%s]", store)
 	if _, err := os.Stat(d); os.IsNotExist(err) {
-		err = os.Mkdir(d, 0755)
+		err = os.Mkdir(d, defaultDirPerms)
 		if err != nil {
 			s.Errorf("Unable to save OCSP response cache: %w", err)
 			return
@@ -336,6 +340,7 @@ For client, leaf spoke (remotes), and leaf hub connections, you may enable OCSP 
 	ocsp_cache {
 	   # Cache OCSP responses for the duration of the CA response validity period
 	   type: <none, local>
+	   local_store: </path/to/store>
 	}
 	...
 
@@ -428,6 +433,12 @@ func parseOCSPResponseCache(v interface{}) (pcfg *OCSPResponseCacheConfig, retEr
 				return nil, &configErr{tk, fmt.Sprintf("error parsing ocsp cache config, unknown cache type [%s]", cache)}
 			}
 			pcfg.Type = cacheType
+		case "local_store":
+			store, ok := mv.(string)
+			if !ok {
+				return nil, &configErr{tk, fmt.Sprintf("error parsing ocsp cache config, unknown field [%q]", mk)}
+			}
+			pcfg.LocalStore = store
 		default:
 			return nil, &configErr{tk, "error parsing ocsp cache config, unknown field"}
 		}

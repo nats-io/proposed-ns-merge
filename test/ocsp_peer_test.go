@@ -1214,6 +1214,8 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			// Cleanup any previous test that saved a local cache
+			deleteLocalStore(t, "")
 			test.configure()
 			content := test.config
 			conf := createConfFile(t, []byte(content))
@@ -1620,6 +1622,17 @@ func TestOCSPResponseCacheChangeAndReload(t *testing.T) {
 
 	if v.OCSPResponseCache.Type != "local" {
 		t.Fatalf("Expected OCSP Response Cache type to be local, got %q", v.OCSPResponseCache.Type)
+	}
+}
+
+func deleteLocalStore(t *testing.T, dir string) {
+	t.Helper()
+	if dir == "" {
+		// default
+		dir = "_rc_"
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("Error cleaning up local store: %v", err)
 	}
 }
 
