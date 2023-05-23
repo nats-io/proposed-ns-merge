@@ -16,7 +16,7 @@ package certidp
 import (
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/json"
+	"encoding/base64"
 	"net/url"
 	"time"
 
@@ -28,7 +28,6 @@ const (
 	DefaultOCSPResponderTimeout = 2 * time.Second
 )
 
-type Fingerprint string
 type CacheType int
 
 const (
@@ -82,33 +81,9 @@ For client, leaf spoke (remotes), and leaf hub connections, you may enable OCSP 
 Note: OCSP validation is enabled for routes and gateways via the server 'ocsp' staple option.
 `
 
-func GenerateFingerprint(cert *x509.Certificate) Fingerprint {
+func GenerateFingerprint(cert *x509.Certificate) string {
 	data := sha256.Sum256(cert.Raw)
-	return Fingerprint(data[:])
-}
-
-// function taking string and returning base64-encoded []byte
-func (f *Fingerprint) String() string {
-	return string(*f)
-}
-
-func (f *Fingerprint) MarshalJSON() ([]byte, error) {
-	// will base64-encode the []byte for us
-	data, err := json.Marshal([]byte(*f))
-	if err != nil {
-		return nil, err
-	}
-	return data, nil
-}
-func (f *Fingerprint) UnmarshalJSON(data []byte) error {
-	// will base64-decode the []byte for us
-	var raw []byte
-	err := json.Unmarshal(data, &raw)
-	if err != nil {
-		return err
-	}
-	*f = Fingerprint(raw)
-	return nil
+	return base64.StdEncoding.EncodeToString(data[:])
 }
 
 func getWebEndpoints(uris *[]string) []*url.URL {
