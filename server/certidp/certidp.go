@@ -17,7 +17,9 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"net/url"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ocsp"
@@ -27,6 +29,48 @@ const (
 	AllowedClockSkew            = 30 * time.Second
 	DefaultOCSPResponderTimeout = 2 * time.Second
 )
+
+type StatusAssertion int
+
+var (
+	StatusAssertionStrToVal = map[string]StatusAssertion{
+		"good":    ocsp.Good,
+		"revoked": ocsp.Revoked,
+		"unknown": ocsp.Unknown,
+	}
+
+	StatusAssertionValToStr = map[StatusAssertion]string{
+		ocsp.Good:    "good",
+		ocsp.Revoked: "revoked",
+		ocsp.Unknown: "unknown",
+	}
+	StatusAssertionIntToVal = map[int]StatusAssertion{
+		0: ocsp.Good,
+		1: ocsp.Revoked,
+		2: ocsp.Unknown,
+	}
+)
+
+func (sa StatusAssertion) MarshalJSON() ([]byte, error) {
+	var str string
+	str, ok := StatusAssertionValToStr[sa]
+	if !ok {
+		// set unknown as fallback
+		str = StatusAssertionValToStr[ocsp.Unknown]
+	}
+	return json.Marshal(str)
+}
+
+func (sa *StatusAssertion) UnmarshalJSON(in []byte) error {
+	var v StatusAssertion
+	v, ok := StatusAssertionStrToVal[strings.ReplaceAll(string(in), "\"", "")]
+	if !ok {
+		// set unknown as fallback
+		v = StatusAssertionStrToVal["unknown"]
+	}
+	*sa = v
+	return nil
+}
 
 type CacheType int
 

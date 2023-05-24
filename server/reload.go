@@ -674,7 +674,7 @@ type ocspResponseCacheOption struct {
 }
 
 func (a *ocspResponseCacheOption) Apply(s *Server) {
-	s.Noticef("Reloaded: OCSP Response Cache")
+	s.Noticef("Reloaded OCSP response cache")
 }
 
 // connectErrorReports implements the option interface for the `connect_error_reports`

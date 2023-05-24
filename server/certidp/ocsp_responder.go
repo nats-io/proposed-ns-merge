@@ -41,7 +41,7 @@ func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte,
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("bad OCSP responder http status: %d", resp.StatusCode)
+			return nil, fmt.Errorf("bad OCSP responder http status: [%d]", resp.StatusCode)
 		}
 
 		return io.ReadAll(resp.Body)
@@ -70,7 +70,7 @@ func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte,
 	}
 	for _, u := range responders {
 		url := u.String()
-		log.Debugf("Trying OCSP responder url: %s", url)
+		log.Debugf("Trying OCSP responder url [%s]", url)
 		url = strings.TrimSuffix(url, "/")
 		raw, err = getRequestBytes(fmt.Sprintf("%s/%s", url, reqEnc), hc)
 		if err == nil {

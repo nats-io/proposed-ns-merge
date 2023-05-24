@@ -55,7 +55,7 @@ func newOCSPResponderIntermediateCA2(t *testing.T) *http.Server {
 }
 
 // TestOCSPPeerGoodClients is test of two NATS client (AIA enabled at leaf and cert) under good path (different intermediates)
-// and default ocsp_cache implementation (omitted ocsp_cache configuration
+// and default ocsp_cache implementation (omitted ocsp_cache configuration)
 func TestOCSPPeerGoodClients(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -230,6 +230,7 @@ func TestOCSPPeerGoodClients(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			deleteLocalStore(t, "")
 			test.configure()
 			content := test.config
 			conf := createConfFile(t, []byte(content))
@@ -313,6 +314,7 @@ func TestOCSPPeerUnknownClient(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			deleteLocalStore(t, "")
 			test.configure()
 			content := test.config
 			conf := createConfFile(t, []byte(content))
@@ -439,6 +441,7 @@ func TestOCSPPeerRevokedClient(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			deleteLocalStore(t, "")
 			test.configure()
 			content := test.config
 			conf := createConfFile(t, []byte(content))
@@ -542,6 +545,7 @@ func TestOCSPPeerUnknownAndRevokedIntermediate(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			deleteLocalStore(t, "")
 			test.configure()
 			content := test.config
 			conf := createConfFile(t, []byte(content))
@@ -696,6 +700,7 @@ func TestOCSPPeerLeafGood(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			deleteLocalStore(t, "")
 			hubcontent := test.hubconfig
 			hubconf := createConfFile(t, []byte(hubcontent))
 			hub, _ := RunServerWithConfig(hubconf)
@@ -840,6 +845,7 @@ func TestOCSPPeerLeafReject(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			deleteLocalStore(t, "")
 			hubcontent := test.hubconfig
 			hubconf := createConfFile(t, []byte(hubcontent))
 			hub, _ := RunServerWithConfig(hubconf)
@@ -892,6 +898,8 @@ func TestOCSPPeerGoodClientsNoneCache(t *testing.T) {
 	intermediateCA2ResponderURL := fmt.Sprintf("http://%s", intermediateCA2Responder.Addr)
 	defer intermediateCA2Responder.Shutdown(ctx)
 	setOCSPStatus(t, intermediateCA2ResponderURL, "configs/certs/ocsp_peer/mini-ca/client2/UserB1_cert.pem", ocsp.Good)
+
+	deleteLocalStore(t, "")
 
 	for _, test := range []struct {
 		name      string
@@ -1545,6 +1553,7 @@ func TestOCSPResponseCacheMonitor(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			deleteLocalStore(t, "")
 			content := test.config
 			conf := createConfFile(t, []byte(content))
 			s, _ := RunServerWithConfig(conf)
@@ -1560,6 +1569,8 @@ func TestOCSPResponseCacheMonitor(t *testing.T) {
 }
 
 func TestOCSPResponseCacheChangeAndReload(t *testing.T) {
+	deleteLocalStore(t, "")
+
 	// Start with ocsp cache set to none
 	content := `
 		port: -1
@@ -1590,7 +1601,7 @@ func TestOCSPResponseCacheChangeAndReload(t *testing.T) {
 		t.Fatalf("Expected OCSP Response Cache to have empty type in varz indicating none")
 	}
 
-	// Change and disable OCSP Stapling.
+	// Change to local cache
 	content = `
 		port: -1
 
