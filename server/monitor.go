@@ -1202,7 +1202,7 @@ type Varz struct {
 	TrustedOperatorsClaim []*jwt.OperatorClaims `json:"trusted_operators_claim,omitempty"`
 	SystemAccount         string                `json:"system_account,omitempty"`
 	PinnedAccountFail     uint64                `json:"pinned_account_fails,omitempty"`
-	OCSPResponseCache     OCSPResponseCacheVarz `json:"ocsp_response_cache,omitempty"`
+	OCSPResponseCache     OCSPResponseCacheVarz `json:"ocsp_peer_cache,omitempty"`
 }
 
 // JetStreamVarz contains basic runtime information about jetstream
@@ -1309,12 +1309,13 @@ type WebsocketOptsVarz struct {
 
 // OCSPResponseCacheVarz contains OCSP response cache information
 type OCSPResponseCacheVarz struct {
-	Type    string `json:"type,omitempty"`
-	Items   int64  `json:"items,omitempty"`
-	Hits    int64  `json:"hits,omitempty"`
-	Misses  int64  `json:"misses,omitempty"`
-	Revokes int64  `json:"revoked_status,omitempty"`
-	Goods   int64  `json:"good_status,omitempty"`
+	Type      string `json:"type,omitempty"`
+	Responses int64  `json:"responses"`
+	Hits      int64  `json:"hits,omitempty"`
+	Misses    int64  `json:"misses,omitempty"`
+	Revokes   int64  `json:"revoked_status,omitempty"`
+	Goods     int64  `json:"good_status,omitempty"`
+	Unknowns  int64  `json:"unknown_status,omitempty"`
 }
 
 // VarzOptions are the options passed to Varz().
@@ -1736,11 +1737,12 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 		if stats != nil {
 			v.OCSPResponseCache = OCSPResponseCacheVarz{
 				s.ocsprc.Type(),
-				stats.Items,
+				stats.Responses,
 				stats.Hits,
 				stats.Misses,
 				stats.Revokes,
 				stats.Goods,
+				stats.Unknowns,
 			}
 		}
 	}

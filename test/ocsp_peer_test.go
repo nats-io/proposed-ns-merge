@@ -1246,8 +1246,8 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 
 			v := monitorGetVarzHelper(t, 8222)
 
-			if v.OCSPResponseCache.Misses != 2 && v.OCSPResponseCache.Items != 2 {
-				t.Errorf("Expected cache misses and cache items to be 2, got %d and %d", v.OCSPResponseCache.Misses, v.OCSPResponseCache.Items)
+			if v.OCSPResponseCache.Misses != 2 && v.OCSPResponseCache.Responses != 2 {
+				t.Errorf("Expected cache misses and cache items to be 2, got %d and %d", v.OCSPResponseCache.Misses, v.OCSPResponseCache.Responses)
 			}
 
 			// Should get a cache hit now
@@ -1279,8 +1279,8 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 
 			v = monitorGetVarzHelper(t, 8222)
 
-			if v.OCSPResponseCache.Misses != 2 && v.OCSPResponseCache.Hits != 2 && v.OCSPResponseCache.Items != 2 {
-				t.Errorf("Expected cache misses, hits and cache items to be 2, got %d and %d and %d", v.OCSPResponseCache.Misses, v.OCSPResponseCache.Hits, v.OCSPResponseCache.Items)
+			if v.OCSPResponseCache.Misses != 2 && v.OCSPResponseCache.Hits != 2 && v.OCSPResponseCache.Responses != 2 {
+				t.Errorf("Expected cache misses, hits and cache items to be 2, got %d and %d and %d", v.OCSPResponseCache.Misses, v.OCSPResponseCache.Hits, v.OCSPResponseCache.Responses)
 			}
 		})
 	}

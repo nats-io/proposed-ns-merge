@@ -56,11 +56,12 @@ type OCSPResponseCacheConfig struct {
 }
 
 type OCSPResponseCacheStats struct {
-	Items   int64 `json:"size"`
-	Hits    int64 `json:"hits"`
-	Misses  int64 `json:"misses"`
-	Revokes int64 `json:"revokes"`
-	Goods   int64 `json:"goods"`
+	Responses int64 `json:"size"`
+	Hits      int64 `json:"hits"`
+	Misses    int64 `json:"misses"`
+	Revokes   int64 `json:"revokes"`
+	Goods     int64 `json:"goods"`
+	Unknowns  int64 `json:"unknowns"`
 }
 
 type OCSPResponseCacheItem struct {
@@ -90,41 +91,50 @@ type NoOpCache struct {
 	online bool
 }
 
+// Put is a no-op
 func (c *NoOpCache) Put(_ string, _ *ocsp.Response, _ string, _ *certidp.Log) {
 	return
 }
 
+// Get is a no-op
 func (c *NoOpCache) Get(_ string, _ *certidp.Log) []byte {
 	return nil
 }
 
+// Delete is a no-op
 func (c *NoOpCache) Delete(_ string, _ *certidp.Log) {
 	return
 }
 
+// Start initializes the configured OCSP peer cache
 func (c *NoOpCache) Start(_ *Server) {
 	c.stats = &OCSPResponseCacheStats{}
 	c.online = true
 	return
 }
 
+// Stop shuts down the configured OCSP peer cache
 func (c *NoOpCache) Stop(_ *Server) {
 	c.online = false
 	return
 }
 
+// Online returns current OCSP peer cache status
 func (c *NoOpCache) Online() bool {
 	return c.online
 }
 
+// Type returns the type of enabled OCSP peer cache
 func (c *NoOpCache) Type() string {
 	return "none"
 }
 
+// Config returns the OCSP peer cache configuration
 func (c *NoOpCache) Config() *OCSPResponseCacheConfig {
 	return c.config
 }
 
+// Stats returns the OCSP peer cache runtime statistics
 func (c *NoOpCache) Stats() *OCSPResponseCacheStats {
 	return c.stats
 }
@@ -138,6 +148,7 @@ type LocalCache struct {
 	mux    *sync.RWMutex
 }
 
+// Put captures a CA OCSP response to the OCSP peer cache indexed by response fingerprint (a hash)
 func (c *LocalCache) Put(key string, caResp *ocsp.Response, subj string, log *certidp.Log) {
 	if !c.online || caResp == nil || key == "" {
 		return
@@ -160,9 +171,10 @@ func (c *LocalCache) Put(key string, caResp *ocsp.Response, subj string, log *ce
 		Resp:        rawC,
 	}
 	c.cache[key] = item
-	c.stats.Items = int64(len(c.cache))
+	c.stats.Responses = int64(len(c.cache))
 }
 
+// Get returns a CA OCSP response from the OCSP peer cache matching the response fingerprint (a hash)
 func (c *LocalCache) Get(key string, log *certidp.Log) []byte {
 	if !c.online || key == "" {
 		return nil
@@ -186,6 +198,7 @@ func (c *LocalCache) Get(key string, log *certidp.Log) []byte {
 	return resp
 }
 
+// Delete removes a CA OCSP response from the OCSP peer cache matching the response fingerprint (a hash)
 func (c *LocalCache) Delete(key string, log *certidp.Log) {
 	if !c.online || key == "" {
 		return
@@ -194,16 +207,14 @@ func (c *LocalCache) Delete(key string, log *certidp.Log) {
 	c.mux.Lock()
 	defer c.mux.Unlock()
 	delete(c.cache, key)
-	c.stats.Items = int64(len(c.cache))
+	c.stats.Responses = int64(len(c.cache))
 }
 
+// Start initializes the configured OCSP peer cache, loads a saved cache from disk (if present), and initializes runtime statistics
 func (c *LocalCache) Start(s *Server) {
 	s.Debugf("Starting OCSP peer cache")
 	c.loadCache(s)
-	c.stats = &OCSPResponseCacheStats{}
-	c.stats.Hits = 0
-	c.stats.Misses = 0
-	c.stats.Items = int64(len(c.cache))
+	c.initStats()
 	c.online = true
 	return
 }
@@ -233,14 +244,34 @@ func (c *LocalCache) Stats() *OCSPResponseCacheStats {
 	}
 	c.mux.RLock()
 	stats := OCSPResponseCacheStats{
-		Items:   c.stats.Items,
-		Hits:    c.stats.Hits,
-		Misses:  c.stats.Misses,
-		Revokes: c.stats.Revokes,
-		Goods:   c.stats.Goods,
+		Responses: c.stats.Responses,
+		Hits:      c.stats.Hits,
+		Misses:    c.stats.Misses,
+		Revokes:   c.stats.Revokes,
+		Goods:     c.stats.Goods,
+		Unknowns:  c.stats.Unknowns,
 	}
 	c.mux.RUnlock()
 	return &stats
+}
+
+func (c *LocalCache) initStats() {
+	c.mux.Lock()
+	defer c.mux.Unlock()
+	c.stats = &OCSPResponseCacheStats{}
+	c.stats.Hits = 0
+	c.stats.Misses = 0
+	c.stats.Responses = int64(len(c.cache))
+	for _, resp := range c.cache {
+		switch resp.RespStatus {
+		case ocsp.Good:
+			c.stats.Goods++
+		case ocsp.Revoked:
+			c.stats.Revokes++
+		case ocsp.Unknown:
+			c.stats.Unknowns++
+		}
+	}
 }
 
 func (c *LocalCache) Compress(buf []byte) ([]byte, error) {
@@ -416,7 +447,6 @@ func (s *Server) stopOCSPResponseCache() {
 		return
 	}
 	// Stopping the cache means different things depending on the selected implementation
-	s.Debugf("Stopping OCSP peer cache")
 	s.ocsprc.Stop(s)
 }
 

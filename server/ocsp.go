@@ -736,7 +736,8 @@ func (s *Server) reloadOCSP() error {
 	// Dispatch all goroutines once again.
 	s.startOCSPMonitoring()
 
-	// Init and start OCSP responder cache
+	// Init and restart OCSP responder cache
+	s.stopOCSPResponseCache()
 	s.initOCSPResponseCache()
 	s.startOCSPResponseCache()
 

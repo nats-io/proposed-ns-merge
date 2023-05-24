@@ -316,9 +316,9 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 	}
 
 	if ocspr.Status != ocsp.Good {
-		s.Debugf("OCSP peer fail for [%s]", subj)
+		s.Debugf("OCSP verify fail for [%s]", subj)
 		return false
 	}
-	s.Debugf("OCSP peer pass for [%s]", subj)
+	s.Debugf("OCSP verify pass for [%s]", subj)
 	return true
 }
