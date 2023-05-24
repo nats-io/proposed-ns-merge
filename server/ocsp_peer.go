@@ -279,7 +279,7 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 	var rc = s.ocsprc
 
 	// Check our cache before calling out to the CA OCSP responder
-	s.Debugf("Checking OCSP response cache for [%s], key [%s]", subj, fingerprint)
+	s.Debugf("Checking OCSP peer cache for [%s], key [%s]", subj, fingerprint)
 	if rawResp = rc.Get(fingerprint, sLogs); rawResp != nil && len(rawResp) > 0 {
 		ocspr, err = ocsp.ParseResponse(rawResp, link.Issuer)
 		if err == nil && ocspr != nil {
@@ -296,7 +296,7 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 		// CA OCSP responder callout
 		rawResp, err = certidp.FetchOCSPResponse(link, opts, sLogs)
 		if err != nil || rawResp == nil || len(rawResp) == 0 {
-			s.Debugf("OCSP response fetch error: %s", err)
+			s.Debugf("OCSP peer cache fetch error: %s", err)
 			return false
 		}
 
@@ -306,7 +306,7 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 				return false
 			}
 		} else {
-			s.Debugf("OCSP response parse error: %s", err)
+			s.Debugf("OCSP peer cache parse error: %s", err)
 			return false
 		}
 
@@ -316,9 +316,9 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 	}
 
 	if ocspr.Status != ocsp.Good {
-		s.Debugf("OCSP fail for [%s]", subj)
+		s.Debugf("OCSP peer fail for [%s]", subj)
 		return false
 	}
-	s.Debugf("OCSP pass for [%s]", subj)
+	s.Debugf("OCSP peer pass for [%s]", subj)
 	return true
 }

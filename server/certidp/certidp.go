@@ -72,18 +72,6 @@ func (sa *StatusAssertion) UnmarshalJSON(in []byte) error {
 	return nil
 }
 
-type CacheType int
-
-const (
-	NONE CacheType = iota + 1
-	LOCAL
-)
-
-var CacheTypeMap = map[string]CacheType{
-	"none":  NONE,
-	"local": LOCAL,
-}
-
 type ChainLink struct {
 	Leaf             *x509.Certificate
 	Issuer           *x509.Certificate

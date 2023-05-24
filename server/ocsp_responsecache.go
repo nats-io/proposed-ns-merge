@@ -38,8 +38,20 @@ const (
 	OCSPResponseCacheDefaultFilename = "cache.json"
 )
 
+type OCSPResponseCacheType int
+
+const (
+	NONE OCSPResponseCacheType = iota + 1
+	LOCAL
+)
+
+var OCSPResponseCacheTypeMap = map[string]OCSPResponseCacheType{
+	"none":  NONE,
+	"local": LOCAL,
+}
+
 type OCSPResponseCacheConfig struct {
-	Type       certidp.CacheType
+	Type       OCSPResponseCacheType
 	LocalStore string
 }
 
@@ -160,10 +172,10 @@ func (c *LocalCache) Get(key string, log *certidp.Log) []byte {
 	val, ok := c.cache[key]
 	if ok {
 		atomic.AddInt64(&c.stats.Hits, 1)
-		log.Debugf("OCSP response cache hit for key [%s]", key)
+		log.Debugf("OCSP peer cache hit for key [%s]", key)
 	} else {
 		atomic.AddInt64(&c.stats.Misses, 1)
-		log.Debugf("OCSP response cache miss for key [%s]", key)
+		log.Debugf("OCSP peer cache miss for key [%s]", key)
 		return nil
 	}
 	resp, err := c.Decompress(val.Resp)
@@ -178,7 +190,7 @@ func (c *LocalCache) Delete(key string, log *certidp.Log) {
 	if !c.online || key == "" {
 		return
 	}
-	log.Debugf("Deleting OCSP cached response for key [%s]", key)
+	log.Debugf("Deleting OCSP peer cached response for key [%s]", key)
 	c.mux.Lock()
 	defer c.mux.Unlock()
 	delete(c.cache, key)
@@ -186,7 +198,7 @@ func (c *LocalCache) Delete(key string, log *certidp.Log) {
 }
 
 func (c *LocalCache) Start(s *Server) {
-	s.Debugf("Starting OCSP response cache")
+	s.Debugf("Starting OCSP peer cache")
 	c.loadCache(s)
 	c.stats = &OCSPResponseCacheStats{}
 	c.stats.Hits = 0
@@ -197,7 +209,7 @@ func (c *LocalCache) Start(s *Server) {
 }
 
 func (c *LocalCache) Stop(s *Server) {
-	s.Debugf("Stopping OCSP response cache")
+	s.Debugf("Stopping OCSP peer cache")
 	c.online = false
 	c.saveCache(s)
 	return
@@ -271,7 +283,7 @@ func (c *LocalCache) loadCache(s *Server) {
 		s.Errorf("Unable to load OCSP peer cache: %w", err)
 		return
 	}
-	s.Debugf("Loading OCSP response cache [%s]", store)
+	s.Debugf("Loading OCSP peer cache [%s]", store)
 	c.mux.Lock()
 	defer c.mux.Unlock()
 	c.cache = make(map[string]OCSPResponseCacheItem)
@@ -301,7 +313,7 @@ func (c *LocalCache) saveCache(s *Server) {
 		s.Errorf("Unable to save OCSP peer cache: %w", err)
 		return
 	}
-	s.Debugf("Saving OCSP response cache [%s]", store)
+	s.Debugf("Saving OCSP peer cache [%s]", store)
 	if _, err := os.Stat(d); os.IsNotExist(err) {
 		err = os.Mkdir(d, defaultDirPerms)
 		if err != nil {
@@ -362,16 +374,16 @@ func (s *Server) initOCSPResponseCache() {
 	so := s.getOpts()
 	if so.OCSPCacheConfig == nil {
 		so.OCSPCacheConfig = &OCSPResponseCacheConfig{
-			Type: certidp.LOCAL,
+			Type: LOCAL,
 		}
 	}
 
 	var cc = so.OCSPCacheConfig
 
 	switch cc.Type {
-	case certidp.NONE:
+	case NONE:
 		s.ocsprc = &NoOpCache{config: cc, online: true}
-	case certidp.LOCAL:
+	case LOCAL:
 		s.ocsprc = &LocalCache{
 			config: cc,
 			online: false,
@@ -389,8 +401,7 @@ func (s *Server) startOCSPResponseCache() {
 		return
 	}
 
-	// Starting the cache means different things depending on the selected implementation
-	// from no-op to setting up NATS KV Client, and potentially creation of a Bucket
+	// Could be heavier operation depending on cache implementation
 	s.ocsprc.Start(s)
 
 	if s.ocsprc.Online() {
@@ -405,7 +416,7 @@ func (s *Server) stopOCSPResponseCache() {
 		return
 	}
 	// Stopping the cache means different things depending on the selected implementation
-	s.Noticef("Stopping OCSP peer cache")
+	s.Debugf("Stopping OCSP peer cache")
 	s.ocsprc.Stop(s)
 }
 
@@ -420,7 +431,7 @@ func parseOCSPResponseCache(v interface{}) (pcfg *OCSPResponseCacheConfig, retEr
 	}
 
 	pcfg = &OCSPResponseCacheConfig{
-		Type: certidp.LOCAL,
+		Type: LOCAL,
 	}
 
 	retError = nil
@@ -434,7 +445,7 @@ func parseOCSPResponseCache(v interface{}) (pcfg *OCSPResponseCacheConfig, retEr
 			if !ok {
 				return nil, &configErr{tk, fmt.Sprintf("error parsing OCSP peer cache config, unknown field [%q]", mk)}
 			}
-			cacheType, exists := certidp.CacheTypeMap[strings.ToLower(cache)]
+			cacheType, exists := OCSPResponseCacheTypeMap[strings.ToLower(cache)]
 			if !exists {
 				return nil, &configErr{tk, fmt.Sprintf("error parsing OCSP peer cache config, unknown type [%s]", cache)}
 			}
