@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	AllowedClockSkew            = 30 * time.Second
+	DefaultAllowedClockSkew     = 30 * time.Second
 	DefaultOCSPResponderTimeout = 2 * time.Second
 )
 
@@ -168,7 +168,7 @@ func GetLeafIssuerCert(chain *[]*x509.Certificate, leafPos int) *x509.Certificat
 func OCSPResponseCurrent(ocspr *ocsp.Response, opts *OCSPPeerConfig, log *Log) bool {
 	skew := time.Duration(opts.ClockSkew * float64(time.Second))
 	if skew <= 0*time.Second {
-		skew = AllowedClockSkew
+		skew = DefaultAllowedClockSkew
 	}
 	// Time validation not handled by ParseResponse.
 	// https://tools.ietf.org/html/rfc6960#section-4.2.2.1
@@ -177,13 +177,13 @@ func OCSPResponseCurrent(ocspr *ocsp.Response, opts *OCSPPeerConfig, log *Log) b
 	if !ocspr.NextUpdate.IsZero() && ocspr.NextUpdate.Before(now.Add(-1*skew)) {
 		t := ocspr.NextUpdate.Format(time.RFC3339Nano)
 		nt := now.Format(time.RFC3339Nano)
-		log.Debugf("Invalid OCSP response NextUpdate [%s] is past now [%s] with clockskew [%s]", t, nt, skew)
+		log.Debugf("OCSP response NextUpdate [%s] is past now [%s] with clockskew [%s]", t, nt, skew)
 		return false
 	}
 	if ocspr.ThisUpdate.After(now.Add(skew)) {
 		t := ocspr.ThisUpdate.Format(time.RFC3339Nano)
 		nt := now.Format(time.RFC3339Nano)
-		log.Debugf("Invalid OCSP response ThisUpdate [%s] is before now [%s] with clockskew [%s]", t, nt, skew)
+		log.Debugf("OCSP response ThisUpdate [%s] is before now [%s] with clockskew [%s]", t, nt, skew)
 		return false
 	}
 	return true
