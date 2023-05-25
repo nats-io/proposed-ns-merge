@@ -75,7 +75,7 @@ type OCSPResponseCacheItem struct {
 type OCSPResponseCache interface {
 	Put(key string, resp *ocsp.Response, subj string, log *certidp.Log)
 	Get(key string, log *certidp.Log) []byte
-	Delete(key string, log *certidp.Log)
+	Delete(key string, miss bool, log *certidp.Log)
 	Type() string
 	Start(s *Server)
 	Stop(s *Server)
@@ -102,7 +102,7 @@ func (c *NoOpCache) Get(_ string, _ *certidp.Log) []byte {
 }
 
 // Delete is a no-op
-func (c *NoOpCache) Delete(_ string, _ *certidp.Log) {
+func (c *NoOpCache) Delete(_ string, _ bool, _ *certidp.Log) {
 	return
 }
 
@@ -199,7 +199,7 @@ func (c *LocalCache) Get(key string, log *certidp.Log) []byte {
 }
 
 // Delete removes a CA OCSP response from the OCSP peer cache matching the response fingerprint (a hash)
-func (c *LocalCache) Delete(key string, log *certidp.Log) {
+func (c *LocalCache) Delete(key string, wasMiss bool, log *certidp.Log) {
 	if !c.online || key == "" {
 		return
 	}
@@ -208,6 +208,12 @@ func (c *LocalCache) Delete(key string, log *certidp.Log) {
 	defer c.mux.Unlock()
 	delete(c.cache, key)
 	c.stats.Responses = int64(len(c.cache))
+
+	// Hits should reflect ultimately not having to reach to CA responder so adjust
+	if wasMiss {
+		atomic.AddInt64(&c.stats.Misses, 1)
+		atomic.AddInt64(&c.stats.Hits, -1)
+	}
 }
 
 // Start initializes the configured OCSP peer cache, loads a saved cache from disk (if present), and initializes runtime statistics

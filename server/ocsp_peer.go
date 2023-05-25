@@ -286,8 +286,8 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 			if certidp.OCSPResponseCurrent(ocspr, opts, sLogs) {
 				useCachedResp = true
 			} else {
-				// cached response is not current, delete it
-				rc.Delete(fingerprint, sLogs)
+				// cached response is not current, delete it and tidy runtime stats to reflect a miss
+				rc.Delete(fingerprint, true, sLogs)
 			}
 		}
 	}
