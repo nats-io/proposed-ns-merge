@@ -317,7 +317,7 @@ func (c *LocalCache) loadCache(s *Server) {
 	f := OCSPResponseCacheDefaultFilename
 	store, err := filepath.Abs(path.Join(d, f))
 	if err != nil {
-		s.Errorf("Unable to load OCSP peer cache: %w", err)
+		s.Errorf("Unable to load OCSP peer cache: %s", err)
 		return
 	}
 	s.Debugf("Loading OCSP peer cache [%s]", store)
@@ -329,7 +329,7 @@ func (c *LocalCache) loadCache(s *Server) {
 		if errors.Is(err, os.ErrNotExist) {
 			s.Debugf("No OCSP peer cache found, starting with empty cache")
 		} else {
-			s.Warnf("Unable to load saved OCSP peer cache: %w", err)
+			s.Warnf("Unable to load saved OCSP peer cache: %s", err)
 		}
 		return
 	}
@@ -337,7 +337,7 @@ func (c *LocalCache) loadCache(s *Server) {
 	if err != nil {
 		// make sure clean cache
 		c.cache = make(map[string]OCSPResponseCacheItem)
-		s.Warnf("Unable to load saved OCSP peer cache: %w", err)
+		s.Warnf("Unable to load saved OCSP peer cache: %s", err)
 		return
 	}
 }
@@ -347,20 +347,20 @@ func (c *LocalCache) saveCache(s *Server) {
 	f := OCSPResponseCacheDefaultFilename
 	store, err := filepath.Abs(path.Join(d, f))
 	if err != nil {
-		s.Errorf("Unable to save OCSP peer cache: %w", err)
+		s.Errorf("Unable to save OCSP peer cache: %s", err)
 		return
 	}
 	s.Debugf("Saving OCSP peer cache [%s]", store)
 	if _, err := os.Stat(d); os.IsNotExist(err) {
 		err = os.Mkdir(d, defaultDirPerms)
 		if err != nil {
-			s.Errorf("Unable to save OCSP peer cache: %w", err)
+			s.Errorf("Unable to save OCSP peer cache: %s", err)
 			return
 		}
 	}
 	tmp, err := os.CreateTemp(d, "ocsprc-*")
 	if err != nil {
-		s.Errorf("Unable to save OCSP peer cache: %w", err)
+		s.Errorf("Unable to save OCSP peer cache: %s", err)
 		return
 	}
 	defer os.Remove(tmp.Name())
@@ -369,18 +369,19 @@ func (c *LocalCache) saveCache(s *Server) {
 	defer c.mux.RUnlock()
 	dat, err := json.MarshalIndent(c.cache, "", " ")
 	if err != nil {
-		s.Errorf("Unable to save OCSP peer cache: %w", err)
+		s.Errorf("Unable to save OCSP peer cache: %s", err)
 		return
 	}
 	err = os.WriteFile(tmp.Name(), dat, 0644)
 	if err != nil {
-		s.Errorf("Unable to save OCSP peer cache: %w", err)
+		s.Errorf("Unable to save OCSP peer cache: %s", err)
 		return
 	}
-	// do the final swap and overrite any old saved peer cache
+
+	// do the final swap and overwrite any old saved peer cache
 	err = os.Rename(tmp.Name(), store)
 	if err != nil {
-		s.Errorf("Unable to save OCSP peer cache: %w", err)
+		s.Errorf("Unable to save OCSP peer cache: %s", err)
 		return
 	}
 }
