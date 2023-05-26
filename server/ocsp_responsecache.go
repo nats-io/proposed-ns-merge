@@ -363,7 +363,10 @@ func (c *LocalCache) saveCache(s *Server) {
 		s.Errorf("Unable to save OCSP peer cache: %s", err)
 		return
 	}
-	defer os.Remove(tmp.Name())
+	defer func() {
+		tmp.Close()
+		os.Remove(tmp.Name())
+	}() // clean up any temp files
 
 	c.mux.RLock()
 	defer c.mux.RUnlock()
@@ -372,7 +375,18 @@ func (c *LocalCache) saveCache(s *Server) {
 		s.Errorf("Unable to save OCSP peer cache: %s", err)
 		return
 	}
-	err = os.WriteFile(tmp.Name(), dat, 0644)
+
+	cacheSize, err := tmp.Write(dat)
+	if err != nil {
+		s.Errorf("Unable to save OCSP peer cache: %s", err)
+		return
+	}
+	err = tmp.Sync()
+	if err != nil {
+		s.Errorf("Unable to save OCSP peer cache: %s", err)
+		return
+	}
+	err = tmp.Close()
 	if err != nil {
 		s.Errorf("Unable to save OCSP peer cache: %s", err)
 		return
@@ -384,6 +398,7 @@ func (c *LocalCache) saveCache(s *Server) {
 		s.Errorf("Unable to save OCSP peer cache: %s", err)
 		return
 	}
+	s.Debugf("Saved OCSP peer cache successfully (%d bytes)", cacheSize)
 }
 
 var _ = `
