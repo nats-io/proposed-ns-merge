@@ -51,8 +51,9 @@ var OCSPResponseCacheTypeMap = map[string]OCSPResponseCacheType{
 }
 
 type OCSPResponseCacheConfig struct {
-	Type       OCSPResponseCacheType
-	LocalStore string
+	Type            OCSPResponseCacheType
+	LocalStore      string
+	PreserveRevoked bool
 }
 
 type OCSPResponseCacheStats struct {
@@ -162,8 +163,12 @@ func (c *LocalCache) Put(key string, caResp *ocsp.Response, subj string, log *ce
 	log.Debugf("OCSP response compression ratio: [%f]", float64(len(rawC))/float64(len(caResp.Raw)))
 	c.mux.Lock()
 	defer c.mux.Unlock()
-
-	item := OCSPResponseCacheItem{
+	// check if we are replacing and do stats
+	item, ok := c.cache[key]
+	if ok {
+		c.adjustStats(-1, item.RespStatus)
+	}
+	item = OCSPResponseCacheItem{
 		Subject:     subj,
 		CachedAt:    time.Now().UTC().Round(time.Second),
 		RespStatus:  certidp.StatusAssertionIntToVal[caResp.Status],
@@ -171,7 +176,7 @@ func (c *LocalCache) Put(key string, caResp *ocsp.Response, subj string, log *ce
 		Resp:        rawC,
 	}
 	c.cache[key] = item
-	c.stats.Responses = int64(len(c.cache))
+	c.adjustStats(1, item.RespStatus)
 }
 
 // Get returns a CA OCSP response from the OCSP peer cache matching the response fingerprint (a hash)
@@ -198,21 +203,49 @@ func (c *LocalCache) Get(key string, log *certidp.Log) []byte {
 	return resp
 }
 
+func (c *LocalCache) adjustStatsHitToMiss() {
+	atomic.AddInt64(&c.stats.Misses, 1)
+	atomic.AddInt64(&c.stats.Hits, -1)
+}
+
+func (c *LocalCache) adjustStats(delta int64, rs certidp.StatusAssertion) {
+	if delta == 0 {
+		return
+	}
+	atomic.AddInt64(&c.stats.Responses, delta)
+	switch rs {
+	case ocsp.Good:
+		atomic.AddInt64(&c.stats.Goods, delta)
+	case ocsp.Revoked:
+		atomic.AddInt64(&c.stats.Revokes, delta)
+	case ocsp.Unknown:
+		atomic.AddInt64(&c.stats.Unknowns, delta)
+	}
+}
+
 // Delete removes a CA OCSP response from the OCSP peer cache matching the response fingerprint (a hash)
 func (c *LocalCache) Delete(key string, wasMiss bool, log *certidp.Log) {
-	if !c.online || key == "" {
+	if !c.online || key == "" || c.config == nil {
+		return
+	}
+	c.mux.Lock()
+	defer c.mux.Unlock()
+	item, ok := c.cache[key]
+	if !ok {
+		return
+	}
+	if item.RespStatus == ocsp.Revoked && c.config.PreserveRevoked {
+		log.Debugf("Revoked OCSP response for key [%s] preserved by cache policy", key)
+		if wasMiss {
+			c.adjustStatsHitToMiss()
+		}
 		return
 	}
 	log.Debugf("Deleting OCSP peer cached response for key [%s]", key)
-	c.mux.Lock()
-	defer c.mux.Unlock()
 	delete(c.cache, key)
-	c.stats.Responses = int64(len(c.cache))
-
-	// Hits should reflect ultimately not having to reach to CA responder so adjust
+	c.adjustStats(-1, item.RespStatus)
 	if wasMiss {
-		atomic.AddInt64(&c.stats.Misses, 1)
-		atomic.AddInt64(&c.stats.Hits, -1)
+		c.adjustStatsHitToMiss()
 	}
 }
 
@@ -367,7 +400,6 @@ func (c *LocalCache) saveCache(s *Server) {
 		tmp.Close()
 		os.Remove(tmp.Name())
 	}() // clean up any temp files
-
 	c.mux.RLock()
 	defer c.mux.RUnlock()
 	dat, err := json.MarshalIndent(c.cache, "", " ")
@@ -375,7 +407,6 @@ func (c *LocalCache) saveCache(s *Server) {
 		s.Errorf("Unable to save OCSP peer cache: %s", err)
 		return
 	}
-
 	cacheSize, err := tmp.Write(dat)
 	if err != nil {
 		s.Errorf("Unable to save OCSP peer cache: %s", err)
@@ -412,6 +443,7 @@ For client, leaf spoke (remotes), and leaf hub connections, you may enable OCSP 
 	   # Cache OCSP responses for the duration of the CA response validity period
 	   type: <none, local>
 	   local_store: </path/to/store>
+	   preserve_revoked: <true, false>
 	}
 	...
 
@@ -423,16 +455,13 @@ func (s *Server) initOCSPResponseCache() {
 	if !s.ocspPeerVerify {
 		return
 	}
-
 	so := s.getOpts()
 	if so.OCSPCacheConfig == nil {
 		so.OCSPCacheConfig = &OCSPResponseCacheConfig{
 			Type: LOCAL,
 		}
 	}
-
 	var cc = so.OCSPCacheConfig
-
 	switch cc.Type {
 	case NONE:
 		s.ocsprc = &NoOpCache{config: cc, online: true}
@@ -456,7 +485,6 @@ func (s *Server) startOCSPResponseCache() {
 
 	// Could be heavier operation depending on cache implementation
 	s.ocsprc.Start(s)
-
 	if s.ocsprc.Online() {
 		s.Noticef("OCSP peer cache online, type [%s]", s.ocsprc.Type())
 	} else {
@@ -475,19 +503,15 @@ func (s *Server) stopOCSPResponseCache() {
 func parseOCSPResponseCache(v interface{}) (pcfg *OCSPResponseCacheConfig, retError error) {
 	var lt token
 	defer convertPanicToError(&lt, &retError)
-
 	tk, v := unwrapValue(v, &lt)
 	cm, ok := v.(map[string]interface{})
 	if !ok {
 		return nil, &configErr{tk, fmt.Sprintf("Expected map to define OCSP peer cache options, got [%T]", v)}
 	}
-
 	pcfg = &OCSPResponseCacheConfig{
 		Type: LOCAL,
 	}
-
 	retError = nil
-
 	for mk, mv := range cm {
 		// Again, unwrap token value if line check is required.
 		tk, mv = unwrapValue(mv, &lt)
@@ -508,10 +532,15 @@ func parseOCSPResponseCache(v interface{}) (pcfg *OCSPResponseCacheConfig, retEr
 				return nil, &configErr{tk, fmt.Sprintf("error parsing ocsp cache config, unknown field [%q]", mk)}
 			}
 			pcfg.LocalStore = store
+		case "preserve_revoked":
+			preserve, ok := mv.(bool)
+			if !ok {
+				return nil, &configErr{tk, fmt.Sprintf("error parsing ocsp cache config, unknown field [%q]", mk)}
+			}
+			pcfg.PreserveRevoked = preserve
 		default:
 			return nil, &configErr{tk, "error parsing OCSP peer cache config, unknown field"}
 		}
 	}
-
 	return pcfg, nil
 }
