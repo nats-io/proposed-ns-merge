@@ -1309,13 +1309,13 @@ type WebsocketOptsVarz struct {
 
 // OCSPResponseCacheVarz contains OCSP response cache information
 type OCSPResponseCacheVarz struct {
-	Type      string `json:"type,omitempty"`
-	Responses int64  `json:"responses"`
-	Hits      int64  `json:"hits,omitempty"`
-	Misses    int64  `json:"misses,omitempty"`
-	Revokes   int64  `json:"revoked_status,omitempty"`
-	Goods     int64  `json:"good_status,omitempty"`
-	Unknowns  int64  `json:"unknown_status,omitempty"`
+	Type      string `json:"cache_type,omitempty"`
+	Hits      int64  `json:"cache_hits,omitempty"`
+	Misses    int64  `json:"cache_misses,omitempty"`
+	Responses int64  `json:"cached_responses,omitempty"`
+	Revokes   int64  `json:"cached_revoked_responses,omitempty"`
+	Goods     int64  `json:"cached_good_responses,omitempty"`
+	Unknowns  int64  `json:"cached_unknown_responses,omitempty"`
 }
 
 // VarzOptions are the options passed to Varz().
@@ -1737,9 +1737,9 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 		if stats != nil {
 			v.OCSPResponseCache = OCSPResponseCacheVarz{
 				s.ocsprc.Type(),
-				stats.Responses,
 				stats.Hits,
 				stats.Misses,
+				stats.Responses,
 				stats.Revokes,
 				stats.Goods,
 				stats.Unknowns,
