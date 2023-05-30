@@ -83,6 +83,24 @@ func parseOCSPPeer(v interface{}) (pcfg *certidp.OCSPPeerConfig, retError error)
 				return nil, &configErr{tk, "error parsing tls peer config, 'ca_timeout' wrong type"}
 			}
 			pcfg.Timeout = at
+		case "warn_only":
+			warnOnly, ok := mv.(bool)
+			if !ok {
+				return nil, &configErr{tk, fmt.Sprintf("error parsing tls peer config, unknown field [%q]", mk)}
+			}
+			pcfg.WarnOnly = warnOnly
+		case "unknown_is_good":
+			unknownIsGood, ok := mv.(bool)
+			if !ok {
+				return nil, &configErr{tk, fmt.Sprintf("error parsing tls peer config, unknown field [%q]", mk)}
+			}
+			pcfg.UnknownIsGood = unknownIsGood
+		case "allow_when_ca_unreachable":
+			allowWhenCAUnreachable, ok := mv.(bool)
+			if !ok {
+				return nil, &configErr{tk, fmt.Sprintf("error parsing tls peer config, unknown field [%q]", mk)}
+			}
+			pcfg.AllowWhenCAUnreachable = allowWhenCAUnreachable
 		default:
 			return nil, &configErr{tk, "error parsing tls peer config, unknown field"}
 		}
@@ -242,7 +260,7 @@ func (s *Server) peerOCSPValid(chains [][]*x509.Certificate, opts *certidp.OCSPP
 		}
 	}
 
-	// if we are here, all chains had OCSP eligible links, but none of the chains achived OCSP valid
+	// if we are here, all chains had OCSP eligible links, but none of the chains achieved OCSP valid
 	s.Debugf("No OCSP valid chains, thus peer is invalid")
 	return false
 }
@@ -269,14 +287,11 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 	// debug/informative only
 	subj := strings.TrimSuffix(fmt.Sprintf("%s+", link.Leaf.Subject.ToRDNSequence()), "+")
 
-	// TODO(tgb) - should we add a no_cache bool option for each TLS ocsp_peer block?
-	// TODO(tgb) - check and implement option to allow failed CA fetch and use cached Revoked responses only...
-	// TODO(tgb) - introduce option to allow responder Unknown as "good"?
-
 	var rawResp []byte
 	var ocspr *ocsp.Response
 	var useCachedResp bool
 	var rc = s.ocsprc
+	var cachedRevocation bool
 
 	// Check our cache before calling out to the CA OCSP responder
 	s.Debugf("Checking OCSP peer cache for [%s], key [%s]", subj, fingerprint)
@@ -284,29 +299,55 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 		ocspr, err = ocsp.ParseResponse(rawResp, link.Issuer)
 		if err == nil && ocspr != nil {
 			if certidp.OCSPResponseCurrent(ocspr, opts, sLogs) {
+				s.Debugf("Cached OCSP response is current and will be used")
 				useCachedResp = true
 			} else {
 				// cached response is not current, delete it and tidy runtime stats to reflect a miss
+				// if preserve_revoked is true, the cache will not delete the cached response
+				s.Debugf("Cached OCSP response is not current and will be deleted")
 				rc.Delete(fingerprint, true, sLogs)
+			}
+			if ocspr.Status == ocsp.Revoked {
+				cachedRevocation = true
 			}
 		}
 	}
 
 	if !useCachedResp {
-		// CA OCSP responder callout
+		// CA OCSP responder callout needed
 		rawResp, err = certidp.FetchOCSPResponse(link, opts, sLogs)
 		if err != nil || rawResp == nil || len(rawResp) == 0 {
-			s.Debugf("OCSP peer cache fetch error: %s", err)
+			s.Warnf("Attempt to obtain OCSP response from CA responder for [%s] failed: %s", subj, err)
+			if opts.AllowWhenCAUnreachable && !cachedRevocation {
+				s.Warnf("Failed to obtain OCSP CA response for [%s] but AllowWhenCAUnreachable is true and no cached revocation so allowing", subj)
+				return true
+			}
+			if opts.WarnOnly {
+				s.Warnf("OCSP verify fail for [%s] but WarnOnly is true so allowing", subj)
+				return true
+			}
+			// TODO(tgb) - system event
 			return false
 		}
 
 		ocspr, err = ocsp.ParseResponse(rawResp, link.Issuer)
 		if err == nil && ocspr != nil {
 			if !certidp.OCSPResponseCurrent(ocspr, opts, sLogs) {
+				s.Warnf("New OCSP CA response obtained for [%s] but not current", subj)
+				if opts.WarnOnly {
+					s.Warnf("OCSP verify fail for [%s] but WarnOnly is true so allowing", subj)
+					return true
+				}
+				// TODO(tgb) - system event
 				return false
 			}
 		} else {
-			s.Debugf("OCSP peer cache parse error: %s", err)
+			s.Errorf("Could not parse OCSP CA response for [%s]: %s", subj, err)
+			if opts.WarnOnly {
+				s.Warnf("OCSP verify fail for [%s] but WarnOnly is true so allowing", subj)
+				return true
+			}
+			// TODO(tgb) - system event
 			return false
 		}
 
@@ -315,8 +356,13 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 		rc.Put(fingerprint, ocspr, subj, sLogs)
 	}
 
-	if ocspr.Status != ocsp.Good {
-		s.Debugf("OCSP verify fail for [%s]", subj)
+	if ocspr.Status == ocsp.Revoked || (ocspr.Status == ocsp.Unknown && !opts.UnknownIsGood) {
+		s.Warnf("OCSP verify fail for [%s] with CA status [%s]", subj, certidp.StatusAssertionValToStr[certidp.StatusAssertionIntToVal[ocspr.Status]])
+		if opts.WarnOnly {
+			s.Warnf("OCSP verify fail for [%s] but WarnOnly is true so allowing", subj)
+			return true
+		}
+		// TODO(tgb) - system event
 		return false
 	}
 	s.Debugf("OCSP verify pass for [%s]", subj)

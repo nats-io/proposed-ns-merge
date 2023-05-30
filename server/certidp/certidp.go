@@ -80,9 +80,12 @@ type ChainLink struct {
 
 // OCSPPeerConfig holds the parsed OCSP peer configuration section of TLS configuration
 type OCSPPeerConfig struct {
-	Verify    bool
-	Timeout   float64
-	ClockSkew float64
+	Verify                 bool
+	Timeout                float64
+	ClockSkew              float64
+	WarnOnly               bool
+	UnknownIsGood          bool
+	AllowWhenCAUnreachable bool
 }
 
 // Log is a neutral method of passign server loggers to plugins
@@ -98,14 +101,25 @@ var _ = `
 For client, leaf spoke (remotes), and leaf hub connections, you may enable OCSP peer validation:
 
     tls {
+        # mTLS must be enabled (with exception of Leaf remotes)
+        verify: true
         ...
+        # short form enables with defaults
+        ocsp_peer: true
+        
+        # long form includes settable options
         ocsp_peer {
            verify: true
            # OCSP responder timeout in seconds (may be fractional)
            ca_timeout: 2
            # Allowed skew between server and OCSP responder time in seconds (may be fractional)
            allowed_clockskew: 30
-           # Cache OCSP responses for the duration of the CA response validity period
+           # Warn only, never reject connections (default false)
+           warn_only: false
+           # Treat response Unknown status as valid certificate (default false)
+           unknown_is_good: false
+           # Warn only if no effective CA response can be obtained and no cached revocation (default false)
+           allow_when_ca_unreachable: false
         }
         ...
     }
