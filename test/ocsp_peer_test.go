@@ -914,10 +914,6 @@ func TestOCSPPeerGoodClientsNoneCache(t *testing.T) {
 			"Default cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
 			`
 				port: -1
-				
-				jetstream: {
-					enabled: true
-				}
 
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
@@ -952,10 +948,6 @@ func TestOCSPPeerGoodClientsNoneCache(t *testing.T) {
 			`
 				port: -1
 
-				jetstream: {
-					enabled: true
-				}
-
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
@@ -984,10 +976,6 @@ func TestOCSPPeerGoodClientsNoneCache(t *testing.T) {
 			"explicit false cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
 			`
 				port: -1
-
-				jetstream: {
-					enabled: true
-				}
 
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
@@ -1021,10 +1009,6 @@ func TestOCSPPeerGoodClientsNoneCache(t *testing.T) {
 			`
 				port: -1
 
-				jetstream: {
-					enabled: true
-				}
-
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
@@ -1055,10 +1039,6 @@ func TestOCSPPeerGoodClientsNoneCache(t *testing.T) {
 			"none cache config: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
 			`
 				port: -1
-
-				jetstream: {
-					enabled: true
-				}
 
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
