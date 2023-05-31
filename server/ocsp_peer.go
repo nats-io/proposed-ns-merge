@@ -29,18 +29,14 @@ import (
 func parseOCSPPeer(v interface{}) (pcfg *certidp.OCSPPeerConfig, retError error) {
 	var lt token
 	defer convertPanicToError(&lt, &retError)
-
 	tk, v := unwrapValue(v, &lt)
 	cm, ok := v.(map[string]interface{})
 	if !ok {
 		return nil, &configErr{tk, fmt.Sprintf(certidp.ErrIllegalPeerOptsConfig, v)}
 	}
-
 	pcfg = &certidp.OCSPPeerConfig{}
 	retError = nil
-
 	for mk, mv := range cm {
-		// Again, unwrap token value if line check is required.
 		tk, mv = unwrapValue(mv, &lt)
 		switch strings.ToLower(mk) {
 		case "verify":
@@ -63,7 +59,7 @@ func parseOCSPPeer(v interface{}) (pcfg *certidp.OCSPPeerConfig, retError error)
 				}
 				at = d.Seconds()
 			default:
-				return nil, &configErr{tk, "error parsing tls peer config, 'allowed_clockskew' wrong type"}
+				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, "unexpected type")}
 			}
 			pcfg.ClockSkew = at
 		case "ca_timeout":
@@ -108,21 +104,18 @@ func parseOCSPPeer(v interface{}) (pcfg *certidp.OCSPPeerConfig, retError error)
 	return pcfg, nil
 }
 
-// mTLS OCSP and Leaf OCSP
+// plugTLSOCSPPeer will plug the TLS handshake lifecycle for client mTLS connections and Leaf connections
 func (s *Server) plugTLSOCSPPeer(config *tlsConfigKind) (*tls.Config, bool, error) {
 	if config == nil || config.tlsConfig == nil {
 		return nil, false, errors.New(certidp.ErrUnableToPlugTLSEmptyConfig)
 	}
 	s.Debugf(certidp.DbgPlugTLSForKind, config.kind)
-
 	kind := config.kind
 	isSpoke := config.isLeafSpoke
 	tcOpts := config.tlsOpts
-
 	if tcOpts == nil || tcOpts.OCSPPeerConfig == nil || !tcOpts.OCSPPeerConfig.Verify {
 		return nil, false, nil
 	}
-
 	// peer is a tls client
 	if kind == kindStringMap[CLIENT] || (kind == kindStringMap[LEAF] && !isSpoke) {
 		if !tcOpts.Verify {
@@ -130,12 +123,10 @@ func (s *Server) plugTLSOCSPPeer(config *tlsConfigKind) (*tls.Config, bool, erro
 		}
 		return s.plugClientTLSOCSPPeer(config)
 	}
-
 	// peer is a tls server
 	if kind == kindStringMap[LEAF] && isSpoke {
 		return s.plugServerTLSOCSPPeer(config)
 	}
-
 	return nil, false, nil
 }
 
@@ -143,21 +134,17 @@ func (s *Server) plugClientTLSOCSPPeer(config *tlsConfigKind) (*tls.Config, bool
 	if config == nil || config.tlsConfig == nil || config.tlsOpts == nil {
 		return nil, false, errors.New(certidp.ErrUnableToPlugTLSClient)
 	}
-
 	tc := config.tlsConfig
 	tcOpts := config.tlsOpts
-
 	if tcOpts.OCSPPeerConfig == nil || !tcOpts.OCSPPeerConfig.Verify {
 		return tc, false, nil
 	}
-
 	tc.VerifyConnection = func(cs tls.ConnectionState) error {
 		if !s.tlsClientOCSPValid(cs.VerifiedChains, tcOpts.OCSPPeerConfig) {
 			return errors.New(certidp.MsgTLSClientRejectConnection)
 		}
 		return nil
 	}
-
 	return tc, true, nil
 }
 
@@ -165,14 +152,11 @@ func (s *Server) plugServerTLSOCSPPeer(config *tlsConfigKind) (*tls.Config, bool
 	if config == nil || config.tlsConfig == nil || config.tlsOpts == nil {
 		return nil, false, errors.New(certidp.ErrUnableToPlugTLSServer)
 	}
-
 	tc := config.tlsConfig
 	tcOpts := config.tlsOpts
-
 	if tcOpts.OCSPPeerConfig == nil || !tcOpts.OCSPPeerConfig.Verify {
 		return tc, false, nil
 	}
-
 	tc.VerifyConnection = func(cs tls.ConnectionState) error {
 		if !s.tlsServerOCSPValid(cs.VerifiedChains, tcOpts.OCSPPeerConfig) {
 			return errors.New(certidp.MsgTLSServerRejectConnection)
@@ -207,17 +191,14 @@ func (s *Server) tlsClientOCSPValid(chains [][]*x509.Certificate, opts *certidp.
 func (s *Server) peerOCSPValid(chains [][]*x509.Certificate, opts *certidp.OCSPPeerConfig) bool {
 	for ci, chain := range chains {
 		s.Debugf(certidp.DbgLinksInChain, ci, len(chain))
-
 		// Self-signed certificate is Client OCSP Valid (no CA)
 		if len(chain) == 1 {
 			s.Debugf(certidp.DbgSelfSignedValid, ci)
 			return true
 		}
-
 		// Check if any of the links in the chain are OCSP eligible
 		chainEligible := false
 		var eligibleLinks []*certidp.ChainLink
-
 		// Iterate over links skipping the root cert which is not OCSP eligible (self == issuer)
 		for linkPos := 0; linkPos < len(chain)-1; linkPos++ {
 			cert := chain[linkPos]
@@ -235,13 +216,11 @@ func (s *Server) peerOCSPValid(chains [][]*x509.Certificate, opts *certidp.OCSPP
 				eligibleLinks = append(eligibleLinks, link)
 			}
 		}
-
 		// A trust-store verified chain that is not OCSP eligible is always OCSP Valid
 		if !chainEligible {
 			s.Debugf(certidp.DbgValidNonOCSPChain, ci)
 			return true
 		}
-
 		s.Debugf(certidp.DbgChainIsOCSPEligible, ci, len(eligibleLinks))
 		// Chain has at least one OCSP eligible link, so check each eligible link;
 		// any link with a !good OCSP response chain OCSP Invalid
@@ -253,13 +232,11 @@ func (s *Server) peerOCSPValid(chains [][]*x509.Certificate, opts *certidp.OCSPP
 				break
 			}
 		}
-
 		if chainValid {
 			s.Debugf(certidp.DbgChainIsOCSPValid, ci)
 			return true
 		}
 	}
-
 	// If we are here, all chains had OCSP eligible links, but none of the chains achieved OCSP valid
 	s.Debugf(certidp.DbgNoOCSPValidChains)
 	return false
@@ -269,9 +246,7 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 	if link == nil || link.Leaf == nil || link.Issuer == nil || link.OCSPWebEndpoints == nil || len(*link.OCSPWebEndpoints) < 1 {
 		return false
 	}
-
 	var err error
-
 	sLogs := &certidp.Log{
 		Debugf:  s.Debugf,
 		Noticef: s.Noticef,
@@ -279,18 +254,14 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 		Errorf:  s.Errorf,
 		Tracef:  s.Tracef,
 	}
-
 	fingerprint := certidp.GenerateFingerprint(link.Leaf)
-
-	// Used for debug/operator only, not comparison
+	// Used for debug/operator only, not match
 	subj := strings.TrimSuffix(fmt.Sprintf("%s+", link.Leaf.Subject.ToRDNSequence()), "+")
-
 	var rawResp []byte
 	var ocspr *ocsp.Response
 	var useCachedResp bool
 	var rc = s.ocsprc
 	var cachedRevocation bool
-
 	// Check our cache before calling out to the CA OCSP responder
 	s.Debugf(certidp.DbgCheckingCacheForCert, subj, fingerprint)
 	if rawResp = rc.Get(fingerprint, sLogs); rawResp != nil && len(rawResp) > 0 {
@@ -310,7 +281,6 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 			}
 		}
 	}
-
 	if !useCachedResp {
 		// CA OCSP responder callout needed
 		rawResp, err = certidp.FetchOCSPResponse(link, opts, sLogs)
@@ -327,7 +297,6 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 			// TODO(tgb) - system event
 			return false
 		}
-
 		ocspr, err = ocsp.ParseResponse(rawResp, link.Issuer)
 		if err == nil && ocspr != nil {
 			if !certidp.OCSPResponseCurrent(ocspr, opts, sLogs) {
@@ -348,11 +317,9 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 			// TODO(tgb) - system event
 			return false
 		}
-
 		// cache the valid CA OCSP Response
 		rc.Put(fingerprint, ocspr, subj, sLogs)
 	}
-
 	if ocspr.Status == ocsp.Revoked || (ocspr.Status == ocsp.Unknown && !opts.UnknownIsGood) {
 		s.Warnf(certidp.ErrOCSPInvalidPeerLink, subj, certidp.StatusAssertionValToStr[certidp.StatusAssertionIntToVal[ocspr.Status]])
 		if opts.WarnOnly {

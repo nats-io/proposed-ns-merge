@@ -414,7 +414,6 @@ func (c *LocalCache) saveCache(s *Server) {
 		s.Errorf(certidp.ErrSaveCacheFail, err)
 		return
 	}
-
 	// do the final swap and overwrite any old saved peer cache
 	err = os.Rename(tmp.Name(), store)
 	if err != nil {
@@ -424,22 +423,28 @@ func (c *LocalCache) saveCache(s *Server) {
 	s.Debugf(certidp.DbgCacheSaved, cacheSize)
 }
 
-var _ = `
-For client, leaf spoke (remotes), and leaf hub connections, you may enable OCSP peer response cacheing:
+var OCSPResponseCacheUsage = `
+You may enable OCSP peer response cacheing at server configuration root level:
 
-	...
-	# true defaults to "local" cache type, if false (or ocsp_cache is not defined) and TLS peer verification is configured, type "none" is implied
-	ocsp_cache: <true, false>
-	-OR-
-	ocsp_cache {
-	   # Cache OCSP responses for the duration of the CA response validity period
-	   type: <none, local>
-	   local_store: </path/to/store>
-	   preserve_revoked: <true, false>  (default false)
-	}
-	...
+(If no TLS blocks are configured with OCSP peer verification, ocsp_cache is ignored.)
 
-Note: Cache of server's own OCSP response (staple) is enabled using the 'ocsp' option.
+    ...
+    # short form enables with defaults
+    ocsp_cache: true
+    # if false or undefined and one or more TLS blocks are configured with OCSP peer verification, "none" is implied.
+
+    # long form includes settable options
+    ocsp_cache {
+        # Cache type <none, local> (default local)
+        type: local
+        # Cache file directory for local-type cache (default _rc_ in current working directory)
+        local_store: "_rc_"
+        # Ignore cache deletes if cached OCSP response is Revoked status (default false)
+        preserve_revoked: false
+    }
+    ...
+
+Note: Cache of server's own OCSP response (staple) is enabled using the 'ocsp' configuration option.
 `
 
 func (s *Server) initOCSPResponseCache() {

@@ -4002,6 +4002,8 @@ func PrintTLSHelpAndDie() {
 	if runtime.GOOS == "windows" {
 		fmt.Printf("%s\n", certstore.Usage)
 	}
+	fmt.Printf("%s", certidp.OCSPPeerUsage)
+	fmt.Printf("%s", OCSPResponseCacheUsage)
 	os.Exit(0)
 }
 

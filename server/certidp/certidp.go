@@ -38,7 +38,6 @@ var (
 		"revoked": ocsp.Revoked,
 		"unknown": ocsp.Unknown,
 	}
-
 	StatusAssertionValToStr = map[StatusAssertion]string{
 		ocsp.Good:    "good",
 		ocsp.Revoked: "revoked",
@@ -97,10 +96,11 @@ type Log struct {
 	Tracef  func(format string, v ...interface{})
 }
 
-var _ = `
+var OCSPPeerUsage = `
 For client, leaf spoke (remotes), and leaf hub connections, you may enable OCSP peer validation:
 
     tls {
+        ...
         # mTLS must be enabled (with exception of Leaf remotes)
         verify: true
         ...
@@ -110,23 +110,24 @@ For client, leaf spoke (remotes), and leaf hub connections, you may enable OCSP 
         # long form includes settable options
         ocsp_peer {
            verify: true
-           # OCSP responder timeout in seconds (may be fractional)
+           # OCSP responder timeout in seconds (may be fractional, default 2 seconds)
            ca_timeout: 2
-           # Allowed skew between server and OCSP responder time in seconds (may be fractional)
+           # Allowed skew between server and OCSP responder time in seconds (may be fractional, default 30 seconds)
            allowed_clockskew: 30
-           # Warn only, never reject connections (default false)
+           # Warn-only and never reject connections (default false)
            warn_only: false
            # Treat response Unknown status as valid certificate (default false)
            unknown_is_good: false
-           # Warn only if no effective CA response can be obtained and no cached revocation (default false)
+           # Warn-only if no effective CA response can be obtained and no cached revocation exists (default false)
            allow_when_ca_unreachable: false
         }
         ...
     }
 
-Note: OCSP validation is enabled for routes and gateways via the server 'ocsp' staple option.
+Note: OCSP validation for route and gateway connections is enabled using the 'ocsp' configuration option.
 `
 
+// GenerateFingerprint returns a base64-encoded SHA256 hash of the raw certificate
 func GenerateFingerprint(cert *x509.Certificate) string {
 	data := sha256.Sum256(cert.Raw)
 	return base64.StdEncoding.EncodeToString(data[:])
@@ -140,7 +141,6 @@ func getWebEndpoints(uris *[]string) []*url.URL {
 			// skip invalid URLs
 			continue
 		}
-
 		if endpoint.Scheme != "http" && endpoint.Scheme != "https" {
 			// skip non-web URLs
 			continue
@@ -150,6 +150,8 @@ func getWebEndpoints(uris *[]string) []*url.URL {
 	return urls
 }
 
+// CertOCSPEligible checks if the certificate's issuer has populated AIA with OCSP responder endpoint(s)
+// and is thus eligible for OCSP validation
 func CertOCSPEligible(link *ChainLink) bool {
 	if link == nil || link.Leaf.Raw == nil || len(link.Leaf.Raw) == 0 {
 		return false
@@ -165,6 +167,7 @@ func CertOCSPEligible(link *ChainLink) bool {
 	return true
 }
 
+// GetLeafIssuerCert returns the issuer certificate of the leaf (positional) certificate in the chain
 func GetLeafIssuerCert(chain *[]*x509.Certificate, leafPos int) *x509.Certificate {
 	if chain == nil || len(*chain) == 0 || leafPos < 0 {
 		return nil
@@ -186,7 +189,6 @@ func OCSPResponseCurrent(ocspr *ocsp.Response, opts *OCSPPeerConfig, log *Log) b
 	// Time validation not handled by ParseResponse.
 	// https://tools.ietf.org/html/rfc6960#section-4.2.2.1
 	now := time.Now().UTC()
-
 	if !ocspr.NextUpdate.IsZero() && ocspr.NextUpdate.Before(now.Add(-1*skew)) {
 		t := ocspr.NextUpdate.Format(time.RFC3339Nano)
 		nt := now.Format(time.RFC3339Nano)
