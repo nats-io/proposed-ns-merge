@@ -26,7 +26,7 @@ import (
 
 func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte, error) {
 	if link == nil || link.Leaf == nil || link.Issuer == nil || opts == nil || log == nil {
-		return nil, fmt.Errorf("invalid chain link")
+		return nil, fmt.Errorf(ErrInvalidChainlink)
 	}
 
 	timeout := time.Duration(opts.Timeout * float64(time.Second))
@@ -41,9 +41,8 @@ func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte,
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("bad OCSP responder http status: [%d]", resp.StatusCode)
+			return nil, fmt.Errorf(ErrBadResponderHTTPStatus, resp.StatusCode)
 		}
-
 		return io.ReadAll(resp.Body)
 	}
 
@@ -60,17 +59,16 @@ func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte,
 	responders := *link.OCSPWebEndpoints
 
 	if len(responders) == 0 {
-		return nil, fmt.Errorf("no available ocsp servers")
+		return nil, fmt.Errorf(ErrNoAvailOCSPServers)
 	}
 
 	var raw []byte
-
 	hc := &http.Client{
 		Timeout: timeout,
 	}
 	for _, u := range responders {
 		url := u.String()
-		log.Debugf("Trying OCSP responder url [%s]", url)
+		log.Debugf(DbgMakingCARequest, url)
 		url = strings.TrimSuffix(url, "/")
 		raw, err = getRequestBytes(fmt.Sprintf("%s/%s", url, reqEnc), hc)
 		if err == nil {
@@ -78,7 +76,7 @@ func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte,
 		}
 	}
 	if err != nil {
-		return nil, fmt.Errorf("exhausted OCSP responders: %w", err)
+		return nil, fmt.Errorf(ErrFailedWithAllRequests, err)
 	}
 
 	return raw, nil

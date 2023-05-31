@@ -141,7 +141,6 @@ func getWebEndpoints(uris *[]string) []*url.URL {
 			continue
 		}
 
-		// TODO(tgb): possibly skip https
 		if endpoint.Scheme != "http" && endpoint.Scheme != "https" {
 			// skip non-web URLs
 			continue
@@ -191,13 +190,13 @@ func OCSPResponseCurrent(ocspr *ocsp.Response, opts *OCSPPeerConfig, log *Log) b
 	if !ocspr.NextUpdate.IsZero() && ocspr.NextUpdate.Before(now.Add(-1*skew)) {
 		t := ocspr.NextUpdate.Format(time.RFC3339Nano)
 		nt := now.Format(time.RFC3339Nano)
-		log.Debugf("OCSP response NextUpdate [%s] is past now [%s] with clockskew [%s]", t, nt, skew)
+		log.Debugf(DbgResponseExpired, t, nt, skew)
 		return false
 	}
 	if ocspr.ThisUpdate.After(now.Add(skew)) {
 		t := ocspr.ThisUpdate.Format(time.RFC3339Nano)
 		nt := now.Format(time.RFC3339Nano)
-		log.Debugf("OCSP response ThisUpdate [%s] is before now [%s] with clockskew [%s]", t, nt, skew)
+		log.Debugf(DbgResponseFutureDated, t, nt, skew)
 		return false
 	}
 	return true

@@ -33,7 +33,7 @@ func parseOCSPPeer(v interface{}) (pcfg *certidp.OCSPPeerConfig, retError error)
 	tk, v := unwrapValue(v, &lt)
 	cm, ok := v.(map[string]interface{})
 	if !ok {
-		return nil, &configErr{tk, fmt.Sprintf("expected map to define OCSP peer opts, got [%T]", v)}
+		return nil, &configErr{tk, fmt.Sprintf(certidp.ErrIllegalPeerOptsConfig, v)}
 	}
 
 	pcfg = &certidp.OCSPPeerConfig{}
@@ -46,7 +46,7 @@ func parseOCSPPeer(v interface{}) (pcfg *certidp.OCSPPeerConfig, retError error)
 		case "verify":
 			verify, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing tls peer config, unknown field [%q]", mk)}
+				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldGeneric, mk)}
 			}
 			pcfg.Verify = verify
 		case "allowed_clockskew":
@@ -59,7 +59,7 @@ func parseOCSPPeer(v interface{}) (pcfg *certidp.OCSPPeerConfig, retError error)
 			case string:
 				d, err := time.ParseDuration(mv)
 				if err != nil {
-					return nil, &configErr{tk, fmt.Sprintf("error parsing tls peer config, 'allowed_clockskew' %s", err)}
+					return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, "unexpected type")}
 				}
 				at = d.Seconds()
 			default:
@@ -76,33 +76,33 @@ func parseOCSPPeer(v interface{}) (pcfg *certidp.OCSPPeerConfig, retError error)
 			case string:
 				d, err := time.ParseDuration(mv)
 				if err != nil {
-					return nil, &configErr{tk, fmt.Sprintf("error parsing tls peer config, 'ca_timeout' %s", err)}
+					return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, err)}
 				}
 				at = d.Seconds()
 			default:
-				return nil, &configErr{tk, "error parsing tls peer config, 'ca_timeout' wrong type"}
+				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, "unexpected type")}
 			}
 			pcfg.Timeout = at
 		case "warn_only":
 			warnOnly, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing tls peer config, unknown field [%q]", mk)}
+				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldGeneric, mk)}
 			}
 			pcfg.WarnOnly = warnOnly
 		case "unknown_is_good":
 			unknownIsGood, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing tls peer config, unknown field [%q]", mk)}
+				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldGeneric, mk)}
 			}
 			pcfg.UnknownIsGood = unknownIsGood
 		case "allow_when_ca_unreachable":
 			allowWhenCAUnreachable, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing tls peer config, unknown field [%q]", mk)}
+				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldGeneric, mk)}
 			}
 			pcfg.AllowWhenCAUnreachable = allowWhenCAUnreachable
 		default:
-			return nil, &configErr{tk, "error parsing tls peer config, unknown field"}
+			return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldGeneric, mk)}
 		}
 	}
 	return pcfg, nil
@@ -111,9 +111,9 @@ func parseOCSPPeer(v interface{}) (pcfg *certidp.OCSPPeerConfig, retError error)
 // mTLS OCSP and Leaf OCSP
 func (s *Server) plugTLSOCSPPeer(config *tlsConfigKind) (*tls.Config, bool, error) {
 	if config == nil || config.tlsConfig == nil {
-		return nil, false, errors.New("unable to plug TLS verify connection, config is nil")
+		return nil, false, errors.New(certidp.ErrUnableToPlugTLSEmptyConfig)
 	}
-	s.Debugf("Plugging TLS OCSP peer for [%s]", config.kind)
+	s.Debugf(certidp.DbgPlugTLSForKind, config.kind)
 
 	kind := config.kind
 	isSpoke := config.isLeafSpoke
@@ -126,7 +126,7 @@ func (s *Server) plugTLSOCSPPeer(config *tlsConfigKind) (*tls.Config, bool, erro
 	// peer is a tls client
 	if kind == kindStringMap[CLIENT] || (kind == kindStringMap[LEAF] && !isSpoke) {
 		if !tcOpts.Verify {
-			return nil, false, errors.New("OCSP peer verification for client connections requires TLS verify (mTLS) to be enabled")
+			return nil, false, errors.New(certidp.ErrMTLSRequired)
 		}
 		return s.plugClientTLSOCSPPeer(config)
 	}
@@ -141,7 +141,7 @@ func (s *Server) plugTLSOCSPPeer(config *tlsConfigKind) (*tls.Config, bool, erro
 
 func (s *Server) plugClientTLSOCSPPeer(config *tlsConfigKind) (*tls.Config, bool, error) {
 	if config == nil || config.tlsConfig == nil || config.tlsOpts == nil {
-		return nil, false, errors.New("unable to register client OCSP verification")
+		return nil, false, errors.New(certidp.ErrUnableToPlugTLSClient)
 	}
 
 	tc := config.tlsConfig
@@ -153,7 +153,7 @@ func (s *Server) plugClientTLSOCSPPeer(config *tlsConfigKind) (*tls.Config, bool
 
 	tc.VerifyConnection = func(cs tls.ConnectionState) error {
 		if !s.tlsClientOCSPValid(cs.VerifiedChains, tcOpts.OCSPPeerConfig) {
-			return errors.New("client not OCSP valid")
+			return errors.New(certidp.MsgTLSClientRejectConnection)
 		}
 		return nil
 	}
@@ -163,7 +163,7 @@ func (s *Server) plugClientTLSOCSPPeer(config *tlsConfigKind) (*tls.Config, bool
 
 func (s *Server) plugServerTLSOCSPPeer(config *tlsConfigKind) (*tls.Config, bool, error) {
 	if config == nil || config.tlsConfig == nil || config.tlsOpts == nil {
-		return nil, false, errors.New("unable to register server OCSP verification")
+		return nil, false, errors.New(certidp.ErrUnableToPlugTLSServer)
 	}
 
 	tc := config.tlsConfig
@@ -175,7 +175,7 @@ func (s *Server) plugServerTLSOCSPPeer(config *tlsConfigKind) (*tls.Config, bool
 
 	tc.VerifyConnection = func(cs tls.ConnectionState) error {
 		if !s.tlsServerOCSPValid(cs.VerifiedChains, tcOpts.OCSPPeerConfig) {
-			return errors.New("server not OCSP valid")
+			return errors.New(certidp.MsgTLSServerRejectConnection)
 		}
 		return nil
 	}
@@ -189,7 +189,7 @@ func (s *Server) plugServerTLSOCSPPeer(config *tlsConfigKind) (*tls.Config, bool
 // OCSP Valid, the Server is deemed OCSP Invalid. A verified self-signed certificate (chain length 1)
 // is also considered OCSP Valid.
 func (s *Server) tlsServerOCSPValid(chains [][]*x509.Certificate, opts *certidp.OCSPPeerConfig) bool {
-	s.Debugf("Peer OCSP enabled: [%d] TLS server chain(s) will be evaluated", len(chains))
+	s.Debugf(certidp.DbgNumServerChains, len(chains))
 	return s.peerOCSPValid(chains, opts)
 }
 
@@ -200,25 +200,25 @@ func (s *Server) tlsServerOCSPValid(chains [][]*x509.Certificate, opts *certidp.
 // OCSP Valid, the Client is deemed OCSP Invalid. A verified self-signed certificate (chain length 1)
 // is also considered OCSP Valid.
 func (s *Server) tlsClientOCSPValid(chains [][]*x509.Certificate, opts *certidp.OCSPPeerConfig) bool {
-	s.Debugf("Peer OCSP enabled: %d TLS client chain(s) will be evaluated", len(chains))
+	s.Debugf(certidp.DbgNumClientChains, len(chains))
 	return s.peerOCSPValid(chains, opts)
 }
 
 func (s *Server) peerOCSPValid(chains [][]*x509.Certificate, opts *certidp.OCSPPeerConfig) bool {
 	for ci, chain := range chains {
-		s.Debugf("Chain [%d]: %d total link(s)", ci, len(chain))
-		// verified self-signed certificate is Client OCSP Valid
+		s.Debugf(certidp.DbgLinksInChain, ci, len(chain))
 
+		// Self-signed certificate is Client OCSP Valid (no CA)
 		if len(chain) == 1 {
-			s.Debugf("Chain [%d] is self-signed, thus peer is valid", ci)
+			s.Debugf(certidp.DbgSelfSignedValid, ci)
 			return true
 		}
 
-		// check if any of the links in the chain are OCSP eligible
+		// Check if any of the links in the chain are OCSP eligible
 		chainEligible := false
 		var eligibleLinks []*certidp.ChainLink
 
-		// iterate over links skipping the root cert which is not OCSP eligible (self == issuer)
+		// Iterate over links skipping the root cert which is not OCSP eligible (self == issuer)
 		for linkPos := 0; linkPos < len(chain)-1; linkPos++ {
 			cert := chain[linkPos]
 			link := &certidp.ChainLink{
@@ -236,18 +236,18 @@ func (s *Server) peerOCSPValid(chains [][]*x509.Certificate, opts *certidp.OCSPP
 			}
 		}
 
-		// A verified chain (i.e. against our trust store) that is not OCSP eligible is always OCSP Valid
+		// A trust-store verified chain that is not OCSP eligible is always OCSP Valid
 		if !chainEligible {
-			s.Debugf("Chain [%d] has no OCSP eligible links, thus peer is valid", ci)
-			// no links in the chain are OCSP eligible so verified chain is Client OSCP Valid
+			s.Debugf(certidp.DbgValidNonOCSPChain, ci)
 			return true
 		}
 
-		s.Debugf("Chain [%d] has %d OCSP eligible link(s)", ci, len(eligibleLinks))
-		// verified chain has at least one OCSP eligible link, so check each eligible link
-		// any link with a !good OCSP response makes the whole chain OCSP Invalid
+		s.Debugf(certidp.DbgChainIsOCSPEligible, ci, len(eligibleLinks))
+		// Chain has at least one OCSP eligible link, so check each eligible link;
+		// any link with a !good OCSP response chain OCSP Invalid
 		chainValid := true
 		for _, link := range eligibleLinks {
+			// if option selected, good could reflect either ocsp.Good or ocsp.Unknown
 			if good := s.certOCSPGood(link, opts); !good {
 				chainValid = false
 				break
@@ -255,13 +255,13 @@ func (s *Server) peerOCSPValid(chains [][]*x509.Certificate, opts *certidp.OCSPP
 		}
 
 		if chainValid {
-			s.Debugf("Chain [%d] is OCSP valid for all eligible links, thus peer is valid", ci)
+			s.Debugf(certidp.DbgChainIsOCSPValid, ci)
 			return true
 		}
 	}
 
-	// if we are here, all chains had OCSP eligible links, but none of the chains achieved OCSP valid
-	s.Debugf("No OCSP valid chains, thus peer is invalid")
+	// If we are here, all chains had OCSP eligible links, but none of the chains achieved OCSP valid
+	s.Debugf(certidp.DbgNoOCSPValidChains)
 	return false
 }
 
@@ -280,11 +280,9 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 		Tracef:  s.Tracef,
 	}
 
-	// cache check here, keyed by fingerprint (hash) of the link's cert
-	// if the peer's cert (or peer's intermediate certs) change in any way, will be rc cache miss
 	fingerprint := certidp.GenerateFingerprint(link.Leaf)
 
-	// debug/informative only
+	// Used for debug/operator only, not comparison
 	subj := strings.TrimSuffix(fmt.Sprintf("%s+", link.Leaf.Subject.ToRDNSequence()), "+")
 
 	var rawResp []byte
@@ -294,17 +292,17 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 	var cachedRevocation bool
 
 	// Check our cache before calling out to the CA OCSP responder
-	s.Debugf("Checking OCSP peer cache for [%s], key [%s]", subj, fingerprint)
+	s.Debugf(certidp.DbgCheckingCacheForCert, subj, fingerprint)
 	if rawResp = rc.Get(fingerprint, sLogs); rawResp != nil && len(rawResp) > 0 {
 		ocspr, err = ocsp.ParseResponse(rawResp, link.Issuer)
 		if err == nil && ocspr != nil {
 			if certidp.OCSPResponseCurrent(ocspr, opts, sLogs) {
-				s.Debugf("Cached OCSP response is current and will be used")
+				s.Debugf(certidp.DbgCurrentResponseCached)
 				useCachedResp = true
 			} else {
-				// cached response is not current, delete it and tidy runtime stats to reflect a miss
-				// if preserve_revoked is true, the cache will not delete the cached response
-				s.Debugf("Cached OCSP response is not current and will be deleted")
+				// Cached response is not current, delete it and tidy runtime stats to reflect a miss;
+				// if preserve_revoked is enabled, the cache will not delete the cached response
+				s.Debugf(certidp.DbgExpiredResponseCached)
 				rc.Delete(fingerprint, true, sLogs)
 			}
 			if ocspr.Status == ocsp.Revoked {
@@ -317,13 +315,13 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 		// CA OCSP responder callout needed
 		rawResp, err = certidp.FetchOCSPResponse(link, opts, sLogs)
 		if err != nil || rawResp == nil || len(rawResp) == 0 {
-			s.Warnf("Attempt to obtain OCSP response from CA responder for [%s] failed: %s", subj, err)
+			s.Warnf(certidp.ErrCAResponderCalloutFail, subj, err)
 			if opts.AllowWhenCAUnreachable && !cachedRevocation {
-				s.Warnf("Failed to obtain OCSP CA response for [%s] but AllowWhenCAUnreachable is true and no cached revocation so allowing", subj)
+				s.Warnf(certidp.MsgAllowWhenCAUnreachableOccurred, subj)
 				return true
 			}
 			if opts.WarnOnly {
-				s.Warnf("OCSP verify fail for [%s] but WarnOnly is true so allowing", subj)
+				s.Warnf(certidp.MsgAllowWarnOnlyOccurred, subj)
 				return true
 			}
 			// TODO(tgb) - system event
@@ -333,18 +331,18 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 		ocspr, err = ocsp.ParseResponse(rawResp, link.Issuer)
 		if err == nil && ocspr != nil {
 			if !certidp.OCSPResponseCurrent(ocspr, opts, sLogs) {
-				s.Warnf("New OCSP CA response obtained for [%s] but not current", subj)
+				s.Warnf(certidp.ErrNewCAResponseNotCurrent, subj)
 				if opts.WarnOnly {
-					s.Warnf("OCSP verify fail for [%s] but WarnOnly is true so allowing", subj)
+					s.Warnf(certidp.MsgAllowWarnOnlyOccurred, subj)
 					return true
 				}
 				// TODO(tgb) - system event
 				return false
 			}
 		} else {
-			s.Errorf("Could not parse OCSP CA response for [%s]: %s", subj, err)
+			s.Errorf(certidp.ErrCAResponseParseFailed, subj, err)
 			if opts.WarnOnly {
-				s.Warnf("OCSP verify fail for [%s] but WarnOnly is true so allowing", subj)
+				s.Warnf(certidp.MsgAllowWarnOnlyOccurred, subj)
 				return true
 			}
 			// TODO(tgb) - system event
@@ -352,19 +350,18 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 		}
 
 		// cache the valid CA OCSP Response
-		// fingerprint is cache key, subject is informational/debug since not unique for this purpose
 		rc.Put(fingerprint, ocspr, subj, sLogs)
 	}
 
 	if ocspr.Status == ocsp.Revoked || (ocspr.Status == ocsp.Unknown && !opts.UnknownIsGood) {
-		s.Warnf("OCSP verify fail for [%s] with CA status [%s]", subj, certidp.StatusAssertionValToStr[certidp.StatusAssertionIntToVal[ocspr.Status]])
+		s.Warnf(certidp.ErrOCSPInvalidPeerLink, subj, certidp.StatusAssertionValToStr[certidp.StatusAssertionIntToVal[ocspr.Status]])
 		if opts.WarnOnly {
-			s.Warnf("OCSP verify fail for [%s] but WarnOnly is true so allowing", subj)
+			s.Warnf(certidp.MsgAllowWarnOnlyOccurred, subj)
 			return true
 		}
 		// TODO(tgb) - system event
 		return false
 	}
-	s.Debugf("OCSP verify pass for [%s]", subj)
+	s.Debugf(certidp.DbgOCSPValidPeerLink, subj)
 	return true
 }

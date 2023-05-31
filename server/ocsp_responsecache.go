@@ -34,8 +34,9 @@ import (
 )
 
 const (
-	OCSPResponseCacheDefaultDir      = "_rc_"
-	OCSPResponseCacheDefaultFilename = "cache.json"
+	OCSPResponseCacheDefaultDir            = "_rc_"
+	OCSPResponseCacheDefaultFilename       = "cache.json"
+	OCSPResponseCacheDefaultTempFilePrefix = "ocsprc-*"
 )
 
 type OCSPResponseCacheType int
@@ -85,62 +86,53 @@ type OCSPResponseCache interface {
 	Stats() *OCSPResponseCacheStats
 }
 
-// NoOpCache is a no-op implementation of OCSPResponseCache for consistent runtime implementation of verification
+// NoOpCache is a no-op implementation of OCSPResponseCache
 type NoOpCache struct {
 	config *OCSPResponseCacheConfig
 	stats  *OCSPResponseCacheStats
 	online bool
 }
 
-// Put is a no-op
 func (c *NoOpCache) Put(_ string, _ *ocsp.Response, _ string, _ *certidp.Log) {
 	return
 }
 
-// Get is a no-op
 func (c *NoOpCache) Get(_ string, _ *certidp.Log) []byte {
 	return nil
 }
 
-// Delete is a no-op
 func (c *NoOpCache) Delete(_ string, _ bool, _ *certidp.Log) {
 	return
 }
 
-// Start initializes the configured OCSP peer cache
 func (c *NoOpCache) Start(_ *Server) {
 	c.stats = &OCSPResponseCacheStats{}
 	c.online = true
 	return
 }
 
-// Stop shuts down the configured OCSP peer cache
 func (c *NoOpCache) Stop(_ *Server) {
 	c.online = false
 	return
 }
 
-// Online returns current OCSP peer cache status
 func (c *NoOpCache) Online() bool {
 	return c.online
 }
 
-// Type returns the type of enabled OCSP peer cache
 func (c *NoOpCache) Type() string {
 	return "none"
 }
 
-// Config returns the OCSP peer cache configuration
 func (c *NoOpCache) Config() *OCSPResponseCacheConfig {
 	return c.config
 }
 
-// Stats returns the OCSP peer cache runtime statistics
 func (c *NoOpCache) Stats() *OCSPResponseCacheStats {
 	return c.stats
 }
 
-// LocalCache is a local persistent implementation of OCSPResponseCache
+// LocalCache is a local file implementation of OCSPResponseCache
 type LocalCache struct {
 	config *OCSPResponseCacheConfig
 	stats  *OCSPResponseCacheStats
@@ -154,13 +146,13 @@ func (c *LocalCache) Put(key string, caResp *ocsp.Response, subj string, log *ce
 	if !c.online || caResp == nil || key == "" {
 		return
 	}
-	log.Debugf("Caching OCSP response for [%s], key [%s]", subj, key)
+	log.Debugf(certidp.DbgCachingResponse, subj, key)
 	rawC, err := c.Compress(caResp.Raw)
 	if err != nil {
-		log.Errorf("Unable to compress OCSP response for key [%s]: %s", key, err)
+		log.Errorf(certidp.ErrResponseCompressFail, key, err)
 		return
 	}
-	log.Debugf("OCSP response compression ratio: [%f]", float64(len(rawC))/float64(len(caResp.Raw)))
+	log.Debugf(certidp.DbgAchievedCompression, float64(len(rawC))/float64(len(caResp.Raw)))
 	c.mux.Lock()
 	defer c.mux.Unlock()
 	// check if we are replacing and do stats
@@ -189,15 +181,15 @@ func (c *LocalCache) Get(key string, log *certidp.Log) []byte {
 	val, ok := c.cache[key]
 	if ok {
 		atomic.AddInt64(&c.stats.Hits, 1)
-		log.Debugf("OCSP peer cache hit for key [%s]", key)
+		log.Debugf(certidp.DbgCacheHit, key)
 	} else {
 		atomic.AddInt64(&c.stats.Misses, 1)
-		log.Debugf("OCSP peer cache miss for key [%s]", key)
+		log.Debugf(certidp.DbgCacheMiss, key)
 		return nil
 	}
 	resp, err := c.Decompress(val.Resp)
 	if err != nil {
-		log.Errorf("Unable to decompress OCSP response for key [%s]: %s", key, err)
+		log.Errorf(certidp.ErrResponseDecompressFail, key, err)
 		return nil
 	}
 	return resp
@@ -235,13 +227,13 @@ func (c *LocalCache) Delete(key string, wasMiss bool, log *certidp.Log) {
 		return
 	}
 	if item.RespStatus == ocsp.Revoked && c.config.PreserveRevoked {
-		log.Debugf("Revoked OCSP response for key [%s] preserved by cache policy", key)
+		log.Debugf(certidp.DbgPreservedRevocation, key)
 		if wasMiss {
 			c.adjustStatsHitToMiss()
 		}
 		return
 	}
-	log.Debugf("Deleting OCSP peer cached response for key [%s]", key)
+	log.Debugf(certidp.DbgDeletingCacheResponse, key)
 	delete(c.cache, key)
 	c.adjustStats(-1, item.RespStatus)
 	if wasMiss {
@@ -251,7 +243,7 @@ func (c *LocalCache) Delete(key string, wasMiss bool, log *certidp.Log) {
 
 // Start initializes the configured OCSP peer cache, loads a saved cache from disk (if present), and initializes runtime statistics
 func (c *LocalCache) Start(s *Server) {
-	s.Debugf("Starting OCSP peer cache")
+	s.Debugf(certidp.DbgStartingCache)
 	c.loadCache(s)
 	c.initStats()
 	c.online = true
@@ -259,7 +251,7 @@ func (c *LocalCache) Start(s *Server) {
 }
 
 func (c *LocalCache) Stop(s *Server) {
-	s.Debugf("Stopping OCSP peer cache")
+	s.Debugf(certidp.DbgStoppingCache)
 	c.online = false
 	c.saveCache(s)
 	return
@@ -320,12 +312,12 @@ func (c *LocalCache) Compress(buf []byte) ([]byte, error) {
 	writer = s2.NewWriter(&output)
 	input := bytes.NewReader(buf[:bodyLen])
 	if n, err := io.CopyN(writer, input, bodyLen); err != nil {
-		return nil, fmt.Errorf("error writing to compression writer: %w", err)
+		return nil, fmt.Errorf(certidp.ErrCannotWriteCompressed, err)
 	} else if n != bodyLen {
-		return nil, fmt.Errorf("short write on body (%d != %d)", n, bodyLen)
+		return nil, fmt.Errorf(certidp.ErrTruncatedWrite, n, bodyLen)
 	}
 	if err := writer.Close(); err != nil {
-		return nil, fmt.Errorf("error closing compression writer: %w", err)
+		return nil, fmt.Errorf(certidp.ErrCannotCloseWriter, err)
 	}
 	return output.Bytes(), nil
 }
@@ -337,32 +329,32 @@ func (c *LocalCache) Decompress(buf []byte) ([]byte, error) {
 	reader = io.NopCloser(s2.NewReader(input))
 	output, err := io.ReadAll(reader)
 	if err != nil {
-		return nil, fmt.Errorf("error reading compression reader: %w", err)
+		return nil, fmt.Errorf(certidp.ErrCannotReadCompressed, err)
 	}
 	return output, reader.Close()
 }
 
 func (c *LocalCache) loadCache(s *Server) {
 	d := s.opts.OCSPCacheConfig.LocalStore
-	if d == "" {
+	if d == _EMPTY_ {
 		d = OCSPResponseCacheDefaultDir
 	}
 	f := OCSPResponseCacheDefaultFilename
 	store, err := filepath.Abs(path.Join(d, f))
 	if err != nil {
-		s.Errorf("Unable to load OCSP peer cache: %s", err)
+		s.Errorf(certidp.ErrLoadCacheFail, err)
 		return
 	}
-	s.Debugf("Loading OCSP peer cache [%s]", store)
+	s.Debugf(certidp.DbgLoadingCache, store)
 	c.mux.Lock()
 	defer c.mux.Unlock()
 	c.cache = make(map[string]OCSPResponseCacheItem)
 	dat, err := os.ReadFile(store)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			s.Debugf("No OCSP peer cache found, starting with empty cache")
+			s.Debugf(certidp.DbgNoCacheFound)
 		} else {
-			s.Warnf("Unable to load saved OCSP peer cache: %s", err)
+			s.Warnf(certidp.ErrLoadCacheFail, err)
 		}
 		return
 	}
@@ -370,7 +362,7 @@ func (c *LocalCache) loadCache(s *Server) {
 	if err != nil {
 		// make sure clean cache
 		c.cache = make(map[string]OCSPResponseCacheItem)
-		s.Warnf("Unable to load saved OCSP peer cache: %s", err)
+		s.Warnf(certidp.ErrLoadCacheFail, err)
 		return
 	}
 }
@@ -380,20 +372,20 @@ func (c *LocalCache) saveCache(s *Server) {
 	f := OCSPResponseCacheDefaultFilename
 	store, err := filepath.Abs(path.Join(d, f))
 	if err != nil {
-		s.Errorf("Unable to save OCSP peer cache: %s", err)
+		s.Errorf(certidp.ErrSaveCacheFail, err)
 		return
 	}
-	s.Debugf("Saving OCSP peer cache [%s]", store)
+	s.Debugf(certidp.DbgSavingCache, store)
 	if _, err := os.Stat(d); os.IsNotExist(err) {
 		err = os.Mkdir(d, defaultDirPerms)
 		if err != nil {
-			s.Errorf("Unable to save OCSP peer cache: %s", err)
+			s.Errorf(certidp.ErrSaveCacheFail, err)
 			return
 		}
 	}
-	tmp, err := os.CreateTemp(d, "ocsprc-*")
+	tmp, err := os.CreateTemp(d, OCSPResponseCacheDefaultTempFilePrefix)
 	if err != nil {
-		s.Errorf("Unable to save OCSP peer cache: %s", err)
+		s.Errorf(certidp.ErrSaveCacheFail, err)
 		return
 	}
 	defer func() {
@@ -404,32 +396,32 @@ func (c *LocalCache) saveCache(s *Server) {
 	defer c.mux.RUnlock()
 	dat, err := json.MarshalIndent(c.cache, "", " ")
 	if err != nil {
-		s.Errorf("Unable to save OCSP peer cache: %s", err)
+		s.Errorf(certidp.ErrSaveCacheFail, err)
 		return
 	}
 	cacheSize, err := tmp.Write(dat)
 	if err != nil {
-		s.Errorf("Unable to save OCSP peer cache: %s", err)
+		s.Errorf(certidp.ErrSaveCacheFail, err)
 		return
 	}
 	err = tmp.Sync()
 	if err != nil {
-		s.Errorf("Unable to save OCSP peer cache: %s", err)
+		s.Errorf(certidp.ErrSaveCacheFail, err)
 		return
 	}
 	err = tmp.Close()
 	if err != nil {
-		s.Errorf("Unable to save OCSP peer cache: %s", err)
+		s.Errorf(certidp.ErrSaveCacheFail, err)
 		return
 	}
 
 	// do the final swap and overwrite any old saved peer cache
 	err = os.Rename(tmp.Name(), store)
 	if err != nil {
-		s.Errorf("Unable to save OCSP peer cache: %s", err)
+		s.Errorf(certidp.ErrSaveCacheFail, err)
 		return
 	}
-	s.Debugf("Saved OCSP peer cache successfully (%d bytes)", cacheSize)
+	s.Debugf(certidp.DbgCacheSaved, cacheSize)
 }
 
 var _ = `
@@ -443,7 +435,7 @@ For client, leaf spoke (remotes), and leaf hub connections, you may enable OCSP 
 	   # Cache OCSP responses for the duration of the CA response validity period
 	   type: <none, local>
 	   local_store: </path/to/store>
-	   preserve_revoked: <true, false>
+	   preserve_revoked: <true, false>  (default false)
 	}
 	...
 
@@ -473,7 +465,7 @@ func (s *Server) initOCSPResponseCache() {
 			mux:    &sync.RWMutex{},
 		}
 	default:
-		s.Fatalf("Unimplemented OCSP peer cache type [%v]", cc.Type)
+		s.Fatalf(certidp.ErrBadCacheTypeConfig, cc.Type)
 	}
 }
 
@@ -486,9 +478,9 @@ func (s *Server) startOCSPResponseCache() {
 	// Could be heavier operation depending on cache implementation
 	s.ocsprc.Start(s)
 	if s.ocsprc.Online() {
-		s.Noticef("OCSP peer cache online, type [%s]", s.ocsprc.Type())
+		s.Noticef(certidp.MsgCacheOnline, s.ocsprc.Type())
 	} else {
-		s.Noticef("OCSP peer cache offline, type [%s]", s.ocsprc.Type())
+		s.Noticef(certidp.MsgCacheOffline, s.ocsprc.Type())
 	}
 }
 
@@ -496,7 +488,6 @@ func (s *Server) stopOCSPResponseCache() {
 	if s.ocsprc == nil {
 		return
 	}
-	// Stopping the cache means different things depending on the selected implementation
 	s.ocsprc.Stop(s)
 }
 
@@ -506,7 +497,7 @@ func parseOCSPResponseCache(v interface{}) (pcfg *OCSPResponseCacheConfig, retEr
 	tk, v := unwrapValue(v, &lt)
 	cm, ok := v.(map[string]interface{})
 	if !ok {
-		return nil, &configErr{tk, fmt.Sprintf("Expected map to define OCSP peer cache options, got [%T]", v)}
+		return nil, &configErr{tk, fmt.Sprintf(certidp.ErrIllegalCacheOptsConfig, v)}
 	}
 	pcfg = &OCSPResponseCacheConfig{
 		Type: LOCAL,
@@ -519,27 +510,27 @@ func parseOCSPResponseCache(v interface{}) (pcfg *OCSPResponseCacheConfig, retEr
 		case "type":
 			cache, ok := mv.(string)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing OCSP peer cache config, unknown field [%q]", mk)}
+				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingCacheOptFieldGeneric, mk)}
 			}
 			cacheType, exists := OCSPResponseCacheTypeMap[strings.ToLower(cache)]
 			if !exists {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing OCSP peer cache config, unknown type [%s]", cache)}
+				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrUnknownCacheType, cache)}
 			}
 			pcfg.Type = cacheType
 		case "local_store":
 			store, ok := mv.(string)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing ocsp cache config, unknown field [%q]", mk)}
+				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingCacheOptFieldGeneric, mk)}
 			}
 			pcfg.LocalStore = store
 		case "preserve_revoked":
 			preserve, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, fmt.Sprintf("error parsing ocsp cache config, unknown field [%q]", mk)}
+				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingCacheOptFieldGeneric, mk)}
 			}
 			pcfg.PreserveRevoked = preserve
 		default:
-			return nil, &configErr{tk, "error parsing OCSP peer cache config, unknown field"}
+			return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingCacheOptFieldGeneric, mk)}
 		}
 	}
 	return pcfg, nil
