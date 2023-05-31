@@ -18,6 +18,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"strings"
 	"time"
@@ -49,6 +50,10 @@ var (
 		2: ocsp.Unknown,
 	}
 )
+
+func GetStatusAssertionStr(sa int) string {
+	return StatusAssertionValToStr[StatusAssertionIntToVal[sa]]
+}
 
 func (sa StatusAssertion) MarshalJSON() ([]byte, error) {
 	var str string
@@ -96,6 +101,13 @@ type Log struct {
 	Tracef  func(format string, v ...interface{})
 }
 
+type CertInfo struct {
+	Subject     string `json:"subject,omitempty"`
+	Issuer      string `json:"issuer,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	Raw         []byte `json:"raw,omitempty"`
+}
+
 var OCSPPeerUsage = `
 For client, leaf spoke (remotes), and leaf hub connections, you may enable OCSP peer validation:
 
@@ -104,20 +116,26 @@ For client, leaf spoke (remotes), and leaf hub connections, you may enable OCSP 
         # mTLS must be enabled (with exception of Leaf remotes)
         verify: true
         ...
-        # short form enables with defaults
+        # short form enables peer verify and takes option defaults
         ocsp_peer: true
         
         # long form includes settable options
         ocsp_peer {
+           # Enable OCSP peer validation (default false)
            verify: true
+
            # OCSP responder timeout in seconds (may be fractional, default 2 seconds)
            ca_timeout: 2
+
            # Allowed skew between server and OCSP responder time in seconds (may be fractional, default 30 seconds)
            allowed_clockskew: 30
+
            # Warn-only and never reject connections (default false)
            warn_only: false
+
            # Treat response Unknown status as valid certificate (default false)
            unknown_is_good: false
+
            # Warn-only if no effective CA response can be obtained and no cached revocation exists (default false)
            allow_when_ca_unreachable: false
         }
@@ -148,6 +166,24 @@ func getWebEndpoints(uris *[]string) []*url.URL {
 		urls = append(urls, endpoint)
 	}
 	return urls
+}
+
+// GetSubjectDNForm returns RDN sequence concatenation of the certificate's subject to be
+// used in logs, events, etc. Should never be used for reliable cache matching or other crypto purposes.
+func GetSubjectDNForm(cert *x509.Certificate) string {
+	if cert == nil {
+		return ""
+	}
+	return strings.TrimSuffix(fmt.Sprintf("%s+", cert.Subject.ToRDNSequence()), "+")
+}
+
+// GetIssuerDNForm returns RDN sequence concatenation of the certificate's issuer to be
+// used in logs, events, etc. Should never be used for reliable cache matching or other crypto purposes.
+func GetIssuerDNForm(cert *x509.Certificate) string {
+	if cert == nil {
+		return ""
+	}
+	return strings.TrimSuffix(fmt.Sprintf("%s+", cert.Issuer.ToRDNSequence()), "+")
 }
 
 // CertOCSPEligible checks if the certificate's issuer has populated AIA with OCSP responder endpoint(s)

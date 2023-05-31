@@ -2388,6 +2388,8 @@ func (reason ClosedState) String() string {
 		return "Minimum Version Required"
 	case ClusterNamesIdentical:
 		return "Cluster Names Identical"
+	case FailedOCSPPeerVerification:
+		return "Failed OCSP Peer Verification"
 	}
 
 	return "Unknown State"

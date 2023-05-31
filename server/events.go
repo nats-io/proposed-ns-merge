@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,7 @@ import (
 	"github.com/klauspost/compress/s2"
 
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nats-server/v2/server/certidp"
 	"github.com/nats-io/nats-server/v2/server/pse"
 )
 
@@ -85,8 +87,8 @@ const (
 	accReqTokens   = 5
 	accReqAccIndex = 3
 
-	ocspPeerRejectEventSubj           = "$SYS.SERVER.%s.OCSPPEER.CONN.REJECT"
-	ocspPeerChainlinkInvalidEventSubj = "$SYS.SERVER.%s.OCSPPEER.CHAINLINK.INVALID"
+	ocspPeerRejectEventSubj           = "$SYS.SERVER.%s.OCSP.PEER.CONN.REJECT"
+	ocspPeerChainlinkInvalidEventSubj = "$SYS.SERVER.%s.OCSP.PEER.LINK.INVALID"
 )
 
 // FIXME(dlc) - make configurable.
@@ -160,14 +162,14 @@ type DisconnectEventMsg struct {
 const DisconnectEventMsgType = "io.nats.server.advisory.v1.client_disconnect"
 
 // OCSPPeerRejectEventMsg is sent when a peer TLS handshake is ultimately rejected due to OCSP invalidation.
-// A "peer" can be an inbound client connection or a leaf connection to a remote server
+// A "peer" can be an inbound client connection or a leaf connection to a remote server. Peer in event payload
+// is always the peer's (TLS) leaf cert, which may or may be the invalid cert (See also OCSPPeerChainlinkInvalidEventMsg)
 type OCSPPeerRejectEventMsg struct {
 	TypedEvent
-	// TLS block type
-	Client ClientInfo `json:"client"`
-	// Server   ServerInfo `json:"server"`
-	// Leaf Cert  CertInfo `json:"cert"`
-	Reason string `json:"reason"`
+	Kind   string           `json:"kind"`
+	Peer   certidp.CertInfo `json:"peer"`
+	Server ServerInfo       `json:"server"`
+	Reason string           `json:"reason"`
 }
 
 // OCSPPeerRejectEventMsgType is the schema type for OCSPPeerRejectEventMsg
@@ -175,16 +177,17 @@ const OCSPPeerRejectEventMsgType = "io.nats.server.advisory.v1.ocsp_peer_reject"
 
 // OCSPPeerChainlinkInvalidEventMsg is sent when a certificate (link) in a valid TLS chain is found to be OCSP invalid
 // during a peer TLS handshake. A "peer" can be an inbound client connection or a leaf connection to a remote server.
+// Peer and Link may be the same if the invalid cert was the peer's leaf cert
 type OCSPPeerChainlinkInvalidEventMsg struct {
 	TypedEvent
-	Client ClientInfo `json:"client"`
-	// Link Cert  CertInfo `json:"cert"`
-	// OCSPResponse	OCSPResponseInfo `json:"ocsp_response"`
-	Reason string `json:"reason"`
+	Link   certidp.CertInfo `json:"link"`
+	Peer   certidp.CertInfo `json:"peer"`
+	Server ServerInfo       `json:"server"`
+	Reason string           `json:"reason"`
 }
 
 // OCSPPeerChainlinkInvalidEventMsgType is the schema type for OCSPPeerChainlinkInvalidEventMsg
-const OCSPPeerChainlinkInvalidEventMsgType = "io.nats.server.advisory.v1.ocsp_peer_chainlink_invalid"
+const OCSPPeerChainlinkInvalidEventMsgType = "io.nats.server.advisory.v1.ocsp_peer_link_invalid"
 
 // AccountNumConns is an event that will be sent from a server that is tracking
 // a given account when the number of connections changes. It will also HB
@@ -2669,50 +2672,73 @@ func (s *Server) wrapChk(f func()) func() {
 	}
 }
 
-// sendOCSPPeerRejectEvent sends a system level event to system account for operatiors when a peer connection is
-// rejected due to OCSP invalid status.
-func (s *Server) sendOCSPPeerRejectEvent(c *client) {
+// sendOCSPPeerRejectEvent sends a system level event to system account when a peer connection is
+// rejected due to OCSP invalid status of its trust chain(s).
+func (s *Server) sendOCSPPeerRejectEvent(kind string, peer *x509.Certificate, reason string) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.eventsEnabled() {
-		s.mu.Unlock()
+		return
+	}
+	if peer == nil {
+		s.Errorf(certidp.ErrPeerEmptyNoEvent)
 		return
 	}
 	eid := s.nextEventID()
-	s.mu.Unlock()
-
 	now := time.Now().UTC()
-	c.mu.Lock()
 	m := OCSPPeerRejectEventMsg{
 		TypedEvent: TypedEvent{
 			Type: OCSPPeerRejectEventMsgType,
 			ID:   eid,
 			Time: now,
 		},
-		Client: ClientInfo{
-			Start:      &c.start,
-			Stop:       &now,
-			Host:       c.host,
-			ID:         c.cid,
-			Account:    accForClient(c),
-			User:       c.getRawAuthUser(),
-			Name:       c.opts.Name,
-			Lang:       c.opts.Lang,
-			Version:    c.opts.Version,
-			RTT:        c.getRTT(),
-			Jwt:        c.opts.JWT,
-			IssuerKey:  issuerForClient(c),
-			Tags:       c.tags,
-			NameTag:    c.nameTag,
-			Kind:       c.kindString(),
-			ClientType: c.clientTypeString(),
-			MQTTClient: c.getMQTTClientID(),
+		Kind: kind,
+		Peer: certidp.CertInfo{
+			Subject:     certidp.GetSubjectDNForm(peer),
+			Issuer:      certidp.GetIssuerDNForm(peer),
+			Fingerprint: certidp.GenerateFingerprint(peer),
+			Raw:         peer.Raw,
 		},
-		Reason: FailedOCSPPeerVerification.String(),
+		Reason: reason,
 	}
-	c.mu.Unlock()
-
-	s.mu.Lock()
 	subj := fmt.Sprintf(ocspPeerRejectEventSubj, s.info.ID)
-	s.sendInternalMsg(subj, _EMPTY_, nil, &m)
-	s.mu.Unlock()
+	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
+}
+
+// sendOCSPPeerChainlinkInvalidEvent sends a system level event to system account when a link in a peer's trust chain
+// is OCSP invalid.
+func (s *Server) sendOCSPPeerChainlinkInvalidEvent(peer *x509.Certificate, link *x509.Certificate, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.eventsEnabled() {
+		return
+	}
+	if peer == nil || link == nil {
+		s.Errorf(certidp.ErrPeerEmptyNoEvent)
+		return
+	}
+	eid := s.nextEventID()
+	now := time.Now().UTC()
+	m := OCSPPeerChainlinkInvalidEventMsg{
+		TypedEvent: TypedEvent{
+			Type: OCSPPeerChainlinkInvalidEventMsgType,
+			ID:   eid,
+			Time: now,
+		},
+		Link: certidp.CertInfo{
+			Subject:     certidp.GetSubjectDNForm(link),
+			Issuer:      certidp.GetIssuerDNForm(link),
+			Fingerprint: certidp.GenerateFingerprint(link),
+			Raw:         link.Raw,
+		},
+		Peer: certidp.CertInfo{
+			Subject:     certidp.GetSubjectDNForm(peer),
+			Issuer:      certidp.GetIssuerDNForm(peer),
+			Fingerprint: certidp.GenerateFingerprint(peer),
+			Raw:         peer.Raw,
+		},
+		Reason: reason,
+	}
+	subj := fmt.Sprintf(ocspPeerChainlinkInvalidEventSubj, s.info.ID)
+	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
 }

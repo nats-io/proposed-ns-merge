@@ -431,14 +431,18 @@ You may enable OCSP peer response cacheing at server configuration root level:
     ...
     # short form enables with defaults
     ocsp_cache: true
-    # if false or undefined and one or more TLS blocks are configured with OCSP peer verification, "none" is implied.
+
+    # if false or undefined and one or more TLS blocks are configured with OCSP peer verification, "none" is implied
 
     # long form includes settable options
     ocsp_cache {
+
         # Cache type <none, local> (default local)
         type: local
+
         # Cache file directory for local-type cache (default _rc_ in current working directory)
         local_store: "_rc_"
+
         # Ignore cache deletes if cached OCSP response is Revoked status (default false)
         preserve_revoked: false
     }

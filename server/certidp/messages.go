@@ -40,6 +40,8 @@ var (
 	ErrBadCacheTypeConfig     = "Unimplemented OCSP peer cache type [%v]"
 	ErrResponseCompressFail   = "Unable to compress OCSP response for key [%s]: %s"
 	ErrResponseDecompressFail = "Unable to decompress OCSP response for key [%s]: %s"
+	ErrPeerEmptyNoEvent       = "Peer certificate is nil, cannot send OCSP peer reject event"
+	ErrPeerEmptyAutoReject    = "Peer certificate is nil, rejecting OCSP peer"
 
 	// Debug information
 	DbgPlugTLSForKind        = "Plugging TLS OCSP peer for [%s]"
@@ -88,4 +90,10 @@ var (
 	// Info (direct logged)
 	MsgCacheOnline  = "OCSP peer cache online, type [%s]"
 	MsgCacheOffline = "OCSP peer cache offline, type [%s]"
+
+	// OCSP cert invalid reasons (debug and event reasons)
+	MsgFailedOCSPResponseFetch   = "Failed OCSP response fetch"
+	MsgOCSPResponseNotEffective  = "OCSP response not in effectivity window"
+	MsgFailedOCSPResponseParse   = "Failed OCSP response parse"
+	MsgOCSPResponseInvalidStatus = "Invalid OCSP response status: %s"
 )
