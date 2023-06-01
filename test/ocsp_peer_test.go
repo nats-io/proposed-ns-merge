@@ -56,9 +56,8 @@ func newOCSPResponderIntermediateCA2(t *testing.T) *http.Server {
 }
 
 // TestOCSPPeerGoodClients is test of two NATS client (AIA enabled at leaf and cert) under good path (different intermediates)
-// and default ocsp_cache implementation (omitted ocsp_cache configuration)
+// and default ocsp_cache implementation and oscp_cache=false configuration
 func TestOCSPPeerGoodClients(t *testing.T) {
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -90,15 +89,14 @@ func TestOCSPPeerGoodClients(t *testing.T) {
 			"Default cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
 			`
 				port: -1
-
+				# default ocsp_cache since omitted
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 					timeout: 5
 					verify: true
-
-					# Explicit configuration
+					# Long form configuration, non-default ca_timeout
 					ocsp_peer: {
 						verify: true
 						ca_timeout: 5
@@ -119,15 +117,14 @@ func TestOCSPPeerGoodClients(t *testing.T) {
 			"Default cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 2",
 			`
 				port: -1
-
+				# default ocsp_cache since omitted
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 					timeout: 5
 					verify: true
-
-					# Setting to true same as ocsp_peer->verify: true and defaults
+					# Short form configuration
 					ocsp_peer: true
 				}
 			`,
@@ -141,38 +138,10 @@ func TestOCSPPeerGoodClients(t *testing.T) {
 			func() {},
 		},
 		{
-			"explicit false cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
+			"Explicit true cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
 			`
 				port: -1
-				ocsp_cache: false
-				tls: {
-					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
-					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
-					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
-					timeout: 5
-					verify: true
-
-					# Explicit configuration
-					ocsp_peer: {
-						verify: true
-						ca_timeout: 5
-						allowed_clockskew: 30
-					}
-				}
-			`,
-			[]nats.Option{
-				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
-				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
-				nats.ErrorHandler(noOpErrHandler),
-			},
-			nil,
-			nil,
-			func() {},
-		},
-		{
-			"explicit true cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
-			`
-				port: -1
+				# Short form configuration
 				ocsp_cache: true
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
@@ -180,39 +149,7 @@ func TestOCSPPeerGoodClients(t *testing.T) {
 					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 					timeout: 5
 					verify: true
-
-					# Explicit configuration
-					ocsp_peer: {
-						verify: true
-						ca_timeout: 5
-						allowed_clockskew: 30
-					}
-				}
-			`,
-			[]nats.Option{
-				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
-				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
-				nats.ErrorHandler(noOpErrHandler),
-			},
-			nil,
-			nil,
-			func() {},
-		},
-		{
-			"none cache config: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
-			`
-				port: -1
-				ocsp_cache: {
-					type: none
-				}
-				tls: {
-					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
-					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
-					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
-					timeout: 5
-					verify: true
-
-					# Explicit configuration
+					# Long form configuration
 					ocsp_peer: {
 						verify: true
 						ca_timeout: 5
@@ -237,7 +174,6 @@ func TestOCSPPeerGoodClients(t *testing.T) {
 			conf := createConfFile(t, []byte(content))
 			s, opts := RunServerWithConfig(conf)
 			defer s.Shutdown()
-
 			nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port), test.opts...)
 			if test.err == nil && err != nil {
 				t.Errorf("Expected to connect, got %v", err)
@@ -251,12 +187,10 @@ func TestOCSPPeerGoodClients(t *testing.T) {
 				return
 			}
 			defer nc.Close()
-
 			nc.Subscribe("ping", func(m *nats.Msg) {
 				m.Respond([]byte("pong"))
 			})
 			nc.Flush()
-
 			_, err = nc.Request("ping", []byte("ping"), 250*time.Millisecond)
 			if test.rerr != nil && err == nil {
 				t.Errorf("Expected error getting response")
@@ -269,7 +203,6 @@ func TestOCSPPeerGoodClients(t *testing.T) {
 
 // TestOCSPPeerUnknownClient is test of NATS client that is OCSP status Unknown from its OCSP Responder
 func TestOCSPPeerUnknownClient(t *testing.T) {
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -290,17 +223,17 @@ func TestOCSPPeerUnknownClient(t *testing.T) {
 		configure func()
 	}{
 		{
-			"mTLS OCSP peer check on inbound client connection, client unknown to intermediate CA 1",
+			"Default cache, mTLS OCSP peer check on inbound client connection, client unknown to intermediate CA 1",
 			`
 				port: -1
-
+				# Cache configuration is default
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 					timeout: 5
 					verify: true
-
+					# Short form configuration
 					ocsp_peer: true
 				}
 			`,
@@ -321,7 +254,6 @@ func TestOCSPPeerUnknownClient(t *testing.T) {
 			conf := createConfFile(t, []byte(content))
 			s, opts := RunServerWithConfig(conf)
 			defer s.Shutdown()
-
 			nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port), test.opts...)
 			if test.err == nil && err != nil {
 				t.Errorf("Expected to connect, got %v", err)
@@ -343,7 +275,6 @@ func TestOCSPPeerUnknownClient(t *testing.T) {
 
 // TestOCSPPeerRevokedClient is test of NATS client that is OCSP status Revoked from its OCSP Responder
 func TestOCSPPeerRevokedClient(t *testing.T) {
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -369,14 +300,13 @@ func TestOCSPPeerRevokedClient(t *testing.T) {
 			"mTLS OCSP peer check on inbound client connection, client revoked by intermediate CA 1",
 			`
 				port: -1
-
+				# Cache configuration is default
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 					timeout: 5
 					verify: true
-
 					# Turn on CA OCSP check so this revoked client should NOT be able to connect
 					ocsp_peer: true
 				}
@@ -391,17 +321,16 @@ func TestOCSPPeerRevokedClient(t *testing.T) {
 			func() {},
 		},
 		{
-			"mTLS OCSP peer check on inbound client connection, client revoked by intermediate CA 1 but no OCSP check",
+			"Explicit disable, mTLS OCSP peer check on inbound client connection, client revoked by intermediate CA 1 but no OCSP check",
 			`
 				port: -1
-
+				# Cache configuration is default
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 					timeout: 5
 					verify: true
-
 					# Explicit disable of OCSP peer check
 					ocsp_peer: false
 				}
@@ -416,17 +345,16 @@ func TestOCSPPeerRevokedClient(t *testing.T) {
 			func() {},
 		},
 		{
-			"mTLS OCSP peer check on inbound client connection, client revoked by intermediate CA 1 but no OCSP check",
+			"Implicit disable, mTLS OCSP peer check on inbound client connection, client revoked by intermediate CA 1 but no OCSP check",
 			`
 				port: -1
-
+				# Cache configuration is default
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 					timeout: 5
 					verify: true
-
 					# Implicit disable of OCSP peer check (i.e. not configured)
 					# ocsp_peer: false
 				}
@@ -448,7 +376,6 @@ func TestOCSPPeerRevokedClient(t *testing.T) {
 			conf := createConfFile(t, []byte(content))
 			s, opts := RunServerWithConfig(conf)
 			defer s.Shutdown()
-
 			nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port), test.opts...)
 			if test.err == nil && err != nil {
 				t.Errorf("Expected to connect, got %v", err)
@@ -468,7 +395,6 @@ func TestOCSPPeerRevokedClient(t *testing.T) {
 
 // TestOCSPPeerUnknownAndRevokedIntermediate test of NATS client that is OCSP good but either its intermediate is unknown or revoked
 func TestOCSPPeerUnknownAndRevokedIntermediate(t *testing.T) {
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -500,14 +426,14 @@ func TestOCSPPeerUnknownAndRevokedIntermediate(t *testing.T) {
 			"mTLS OCSP peer check on inbound client connection, client's intermediate is revoked",
 			`
 				port: -1
-
+				# Cache configuration is default
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 					timeout: 5
 					verify: true
-
+					# Short form configuration
 					ocsp_peer: true
 				}
 			`,
@@ -524,14 +450,14 @@ func TestOCSPPeerUnknownAndRevokedIntermediate(t *testing.T) {
 			"mTLS OCSP peer check on inbound client connection, client's intermediate is unknown'",
 			`
 				port: -1
-
+				# Cache configuration is default
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 					timeout: 5
 					verify: true
-
+					# Short form configuration
 					ocsp_peer: true
 				}
 			`,
@@ -574,7 +500,6 @@ func TestOCSPPeerUnknownAndRevokedIntermediate(t *testing.T) {
 
 // TestOCSPPeerLeafGood tests Leaf Spoke peer checking Leaf Hub, Leaf Hub peer checking Leaf Spoke, and both peer checking
 func TestOCSPPeerLeafGood(t *testing.T) {
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -599,6 +524,7 @@ func TestOCSPPeerLeafGood(t *testing.T) {
 			"OCSP peer check on Leaf Hub by Leaf Spoke (TLS client OCSP verification of TLS server)",
 			`
 				port: -1
+				# Cache configuration is default
 				leaf: {
 					listen: 127.0.0.1:7444
 					tls: {
@@ -618,7 +544,7 @@ func TestOCSPPeerLeafGood(t *testing.T) {
 							tls: {
 								ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 								timeout: 5
-
+								# Short form configuration
 								ocsp_peer: true
 							}
 						}
@@ -631,6 +557,7 @@ func TestOCSPPeerLeafGood(t *testing.T) {
 			"OCSP peer check on Leaf Spoke by Leaf Hub (TLS server OCSP verification of TLS client)",
 			`
 				port: -1
+				# Cache configuration is default
 				leaf: {
 					listen: 127.0.0.1:7444
 					tls: {
@@ -639,7 +566,7 @@ func TestOCSPPeerLeafGood(t *testing.T) {
 						ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 						timeout: 5
 						verify: true
-
+						# Short form configuration
 						ocsp_peer: true
 					}
 				}
@@ -666,6 +593,7 @@ func TestOCSPPeerLeafGood(t *testing.T) {
 			"OCSP peer check bi-directionally",
 			`
 				port: -1
+				# Cache configuration is default
 				leaf: {
 					listen: 127.0.0.1:7444
 					tls: {
@@ -674,7 +602,7 @@ func TestOCSPPeerLeafGood(t *testing.T) {
 						ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 						timeout: 5
 						verify: true
-
+						# Short form configuration
 						ocsp_peer: true
 					}
 				}
@@ -690,7 +618,7 @@ func TestOCSPPeerLeafGood(t *testing.T) {
 								key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer2_keypair.pem"
 								ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 								timeout: 5
-
+								# Short form configuration
 								ocsp_peer: true
 							}
 						}
@@ -719,7 +647,6 @@ func TestOCSPPeerLeafGood(t *testing.T) {
 
 // TestOCSPPeerLeafRejects tests rejected Leaf Hub, rejected Leaf Spoke, and both rejecting each other
 func TestOCSPPeerLeafReject(t *testing.T) {
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -744,6 +671,7 @@ func TestOCSPPeerLeafReject(t *testing.T) {
 			"OCSP peer check on Leaf Hub by Leaf Spoke (TLS client OCSP verification of TLS server)",
 			`
 				port: -1
+				# Cache configuration is default
 				leaf: {
 					listen: 127.0.0.1:7444
 					tls: {
@@ -763,7 +691,7 @@ func TestOCSPPeerLeafReject(t *testing.T) {
 							tls: {
 								ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 								timeout: 5
-
+								# Short form configuration
 								ocsp_peer: true
 							}
 						}
@@ -784,7 +712,7 @@ func TestOCSPPeerLeafReject(t *testing.T) {
 						ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 						timeout: 5
 						verify: true
-
+						# Short form configuration
 						ocsp_peer: true
 					}
 				}
@@ -819,7 +747,7 @@ func TestOCSPPeerLeafReject(t *testing.T) {
 						ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 						timeout: 5
 						verify: true
-
+						# Short form configuration
 						ocsp_peer: true
 					}
 				}
@@ -835,7 +763,7 @@ func TestOCSPPeerLeafReject(t *testing.T) {
 								key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer2_keypair.pem"
 								ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 								timeout: 5
-
+								# Short form configuration
 								ocsp_peer: true
 							}
 						}
@@ -851,16 +779,13 @@ func TestOCSPPeerLeafReject(t *testing.T) {
 			hubconf := createConfFile(t, []byte(hubcontent))
 			hub, _ := RunServerWithConfig(hubconf)
 			defer hub.Shutdown()
-
 			spokecontent := test.spokeconfig
 			spokeconf := createConfFile(t, []byte(spokecontent))
 			spoke, _ := RunServerWithConfig(spokeconf)
 			defer spoke.Shutdown()
-
 			// Need to inject some time for leaf connection attempts to complete, could refine this to better
 			// negative test
 			time.Sleep(2000 * time.Millisecond)
-
 			checkLeafNodeConnectedCount(t, hub, test.expected)
 		})
 	}
@@ -880,7 +805,6 @@ func checkLeafNodeConnectedCount(t testing.TB, s *server.Server, lnCons int) {
 // TestOCSPPeerGoodClientsNoneCache is test of two NATS client (AIA enabled at leaf and cert) under good path (different intermediates)
 // and ocsp cache type of none (no-op)
 func TestOCSPPeerGoodClientsNoneCache(t *testing.T) {
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -911,25 +835,23 @@ func TestOCSPPeerGoodClientsNoneCache(t *testing.T) {
 		configure func()
 	}{
 		{
-			"Default cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
+			"None cache explicit long form: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
 			`
 				port: -1
-
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 					timeout: 5
 					verify: true
-
-					# Explicit configuration
+					# Long form configuration
 					ocsp_peer: {
 						verify: true
 						ca_timeout: 5
 						allowed_clockskew: 30
 					}
 				}
-
+				# Long form configuration
 				ocsp_cache: {
 					type: none
 				}
@@ -944,120 +866,24 @@ func TestOCSPPeerGoodClientsNoneCache(t *testing.T) {
 			func() {},
 		},
 		{
-			"Default cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 2",
+			"None cache explicit short form: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
 			`
 				port: -1
-
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 					timeout: 5
 					verify: true
-
-					# Setting to true same as ocsp_peer->verify: true and defaults
-					ocsp_peer: true
-				}
-
-				ocsp_cache: {
-					type: none
-				}
-			`,
-			[]nats.Option{
-				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client2/UserB1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client2/private/UserB1_keypair.pem"),
-				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
-				nats.ErrorHandler(noOpErrHandler),
-			},
-			nil,
-			nil,
-			func() {},
-		},
-		{
-			"explicit false cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
-			`
-				port: -1
-
-				tls: {
-					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
-					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
-					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
-					timeout: 5
-					verify: true
-
-					# Explicit configuration
+					# Long form configuration
 					ocsp_peer: {
 						verify: true
 						ca_timeout: 5
 						allowed_clockskew: 30
 					}
 				}
-
-				// if set false uses cache type none
+				# Short form configuration
 				ocsp_cache: false
-			`,
-			[]nats.Option{
-				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
-				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
-				nats.ErrorHandler(noOpErrHandler),
-			},
-			nil,
-			nil,
-			func() {},
-		},
-		{
-			"explicit true cache: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
-			`
-				port: -1
-
-				tls: {
-					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
-					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
-					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
-					timeout: 5
-					verify: true
-
-					# Explicit configuration
-					ocsp_peer: {
-						verify: true
-						ca_timeout: 5
-						allowed_clockskew: 30
-					}
-				}
-
-				ocsp_cache: false
-			`,
-			[]nats.Option{
-				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
-				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
-				nats.ErrorHandler(noOpErrHandler),
-			},
-			nil,
-			nil,
-			func() {},
-		},
-		{
-			"none cache config: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
-			`
-				port: -1
-
-				tls: {
-					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
-					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
-					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
-					timeout: 5
-					verify: true
-
-					# Explicit configuration
-					ocsp_peer: {
-						verify: true
-						ca_timeout: 5
-						allowed_clockskew: 30
-					}
-				}
-
-				ocsp_cache: {
-					type: none
-				}
 			`,
 			[]nats.Option{
 				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
@@ -1075,7 +901,6 @@ func TestOCSPPeerGoodClientsNoneCache(t *testing.T) {
 			conf := createConfFile(t, []byte(content))
 			s, opts := RunServerWithConfig(conf)
 			defer s.Shutdown()
-
 			nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port), test.opts...)
 			if test.err == nil && err != nil {
 				t.Errorf("Expected to connect, got %v", err)
@@ -1089,12 +914,10 @@ func TestOCSPPeerGoodClientsNoneCache(t *testing.T) {
 				return
 			}
 			defer nc.Close()
-
 			nc.Subscribe("ping", func(m *nats.Msg) {
 				m.Respond([]byte("pong"))
 			})
 			nc.Flush()
-
 			_, err = nc.Request("ping", []byte("ping"), 250*time.Millisecond)
 			if test.rerr != nil && err == nil {
 				t.Errorf("Expected error getting response")
@@ -1108,7 +931,6 @@ func TestOCSPPeerGoodClientsNoneCache(t *testing.T) {
 // TestOCSPPeerGoodClientsLocalCache is test of two NATS client (AIA enabled at leaf and cert) under good path (different intermediates)
 // and leveraging the local ocsp cache type
 func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1137,28 +959,24 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 		configure func()
 	}{
 		{
-			"Default cache: mTLS OCSP peer check on inbound client connection, UserA1 client of intermediate CA 1",
+			"Default cache, short form: mTLS OCSP peer check on inbound client connection, UserA1 client of intermediate CA 1",
 			`
 				port: -1
-				
 				http_port: 8222
-
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 					timeout: 5
 					verify: true
-
-					# Explicit configuration
+					# Long form configuration
 					ocsp_peer: {
 						verify: true
 						ca_timeout: 5
 						allowed_clockskew: 30
 					}
 				}
-
-				// default cache is local
+				# Short form configuration, local as default
 				ocsp_cache: true
 			`,
 			[]nats.Option{
@@ -1171,10 +989,9 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 			func() {},
 		},
 		{
-			"Local cache: mTLS OCSP peer check on inbound client connection, UserB1 client of intermediate CA 2",
+			"Local cache long form: mTLS OCSP peer check on inbound client connection, UserB1 client of intermediate CA 2",
 			`
 				port: -1
-
 				http_port: 8222
 
 				tls: {
@@ -1183,11 +1000,10 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 					timeout: 5
 					verify: true
-
-					# Setting to true same as ocsp_peer->verify: true and defaults
+					# Short form configuration
 					ocsp_peer: true
 				}
-
+				# Long form configuration
 				ocsp_cache: {
 					type: local
 				}
@@ -1210,7 +1026,6 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 			conf := createConfFile(t, []byte(content))
 			s, opts := RunServerWithConfig(conf)
 			defer s.Shutdown()
-
 			nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port), test.opts...)
 			if test.err == nil && err != nil {
 				t.Errorf("Expected to connect, got %v", err)
@@ -1226,7 +1041,6 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 			nc.Close()
 
 			v := monitorGetVarzHelper(t, 8222)
-
 			if v.OCSPResponseCache.Misses != 2 && v.OCSPResponseCache.Responses != 2 {
 				t.Errorf("Expected cache misses and cache items to be 2, got %d and %d", v.OCSPResponseCache.Misses, v.OCSPResponseCache.Responses)
 			}
@@ -1245,12 +1059,10 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 				return
 			}
 			defer nc.Close()
-
 			nc.Subscribe("ping", func(m *nats.Msg) {
 				m.Respond([]byte("pong"))
 			})
 			nc.Flush()
-
 			_, err = nc.Request("ping", []byte("ping"), 250*time.Millisecond)
 			if test.rerr != nil && err == nil {
 				t.Errorf("Expected error getting response")
@@ -1259,7 +1071,6 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 			}
 
 			v = monitorGetVarzHelper(t, 8222)
-
 			if v.OCSPResponseCache.Misses != 2 && v.OCSPResponseCache.Hits != 2 && v.OCSPResponseCache.Responses != 2 {
 				t.Errorf("Expected cache misses, hits and cache items to be 2, got %d and %d and %d", v.OCSPResponseCache.Misses, v.OCSPResponseCache.Hits, v.OCSPResponseCache.Responses)
 			}
@@ -1268,7 +1079,6 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 }
 
 func TestOCSPPeerMonitor(t *testing.T) {
-
 	for _, test := range []struct {
 		name               string
 		config             string
@@ -1280,19 +1090,18 @@ func TestOCSPPeerMonitor(t *testing.T) {
 		NumTrueLeafRemotes int
 	}{
 		{
-			"ocsp_peer enabled on NATS client",
+			"Monitor peer config setting on NATS client",
 			`
 				port: -1
 				http_port: 8222
-
+				# Default cache configuration
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 					timeout: 5
 					verify: true
-
-					# Explicit configuration
+					# Long form configuration
 					ocsp_peer: {
 						verify: true
 					}
@@ -1306,22 +1115,20 @@ func TestOCSPPeerMonitor(t *testing.T) {
 			0,
 		},
 		{
-			"ocsp_peer enabled on Websockets client",
+			"Monitor peer config setting on Websockets client",
 			`
 				port: -1
 				http_port: 8222
-
+				# Default cache configuration
 				websocket: {
 					port: 8443
-
 					tls: {
 						cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 						key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 						ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 						timeout: 5
 						verify: true
-	
-						# Explicit configuration
+						# Long form configuration
 						ocsp_peer: {
 							verify: true
 						}
@@ -1336,27 +1143,25 @@ func TestOCSPPeerMonitor(t *testing.T) {
 			0,
 		},
 		{
-			"ocsp_peer enabled on MQTT client",
+			"Monitor peer config setting on MQTT client",
 			`
 				port: -1
 				http_port: 8222
+				# Default cache configuration
+				# Required for MQTT
 				server_name: "my_mqtt_server"
-
 				jetstream: {
 					enabled: true
 				}
-
 				mqtt: {
 					port: 1883
-
 					tls: {
 						cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 						key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 						ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 						timeout: 5
 						verify: true
-	
-						# Explicit configuration
+						# Long form configuration
 						ocsp_peer: {
 							verify: true
 						}
@@ -1371,22 +1176,20 @@ func TestOCSPPeerMonitor(t *testing.T) {
 			0,
 		},
 		{
-			"ocsp_peer enabled on Leaf client",
+			"Monitor peer config setting on Leaf client",
 			`
 				port: -1
 				http_port: 8222
-
+				# Default cache configuration
 				leaf: {
 					port: 7422
-
 					tls: {
 						cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 						key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 						ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 						timeout: 5
 						verify: true
-	
-						# Explicit configuration
+						# Long form configuration
 						ocsp_peer: {
 							verify: true
 						}
@@ -1401,22 +1204,20 @@ func TestOCSPPeerMonitor(t *testing.T) {
 			0,
 		},
 		{
-			"ocsp_peer enabled on some Leaf Remotes as well as Leaf client",
+			"Monitor peer config on some Leaf Remotes as well as Leaf client",
 			`
 				port: -1
 				http_port: 8222
-
+				# Default cache configuration
 				leaf: {
 					port: 7422
-
 					tls: {
 						cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 						key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 						ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 						timeout: 5
 						verify: true
-	
-						# Explicit configuration
+						# Long form configuration
 						ocsp_peer: {
 							verify: true
 						}
@@ -1429,8 +1230,7 @@ func TestOCSPPeerMonitor(t *testing.T) {
 								key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 								ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 								timeout: 5
-			
-								# Explicit configuration
+								# Long form configuration
 								ocsp_peer: {
 									verify: true
 								}
@@ -1443,6 +1243,7 @@ func TestOCSPPeerMonitor(t *testing.T) {
 								key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 								ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 								timeout: 5
+								# Short form configuration
 								ocsp_peer: true
 							}
 						},
@@ -1453,6 +1254,7 @@ func TestOCSPPeerMonitor(t *testing.T) {
 								key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 								ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 								timeout: 5
+								# Peer not configured (default false)
 							}
 						}
 					]
@@ -1471,9 +1273,7 @@ func TestOCSPPeerMonitor(t *testing.T) {
 			conf := createConfFile(t, []byte(content))
 			s, _ := RunServerWithConfig(conf)
 			defer s.Shutdown()
-
 			v := monitorGetVarzHelper(t, 8222)
-
 			if test.NATSClient {
 				if !v.TLSOCSPPeerVerify {
 					t.Fatalf("Expected NATS Client TLSOCSPPeerVerify to be true, got false")
@@ -1505,32 +1305,119 @@ func TestOCSPPeerMonitor(t *testing.T) {
 }
 
 func TestOCSPResponseCacheMonitor(t *testing.T) {
-
 	for _, test := range []struct {
 		name   string
 		config string
+		expect string
 	}{
 		{
-			"ocsp_peer enabled on NATS client",
+			"Monitor local cache enabled, explicit cache true",
 			`
 				port: -1
 				http_port: 8222
-
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 					timeout: 5
 					verify: true
-
-					# Explicit configuration
+					# Long form configuration
 					ocsp_peer: {
 						verify: true
 					}
 				}
-
+				# Short form configuration
 				ocsp_cache: true
 			`,
+			"local",
+		},
+		{
+			"Monitor local cache enabled, explicit cache type local",
+			`
+				port: -1
+				http_port: 8222
+				tls: {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+					verify: true
+					# Long form configuration
+					ocsp_peer: {
+						verify: true
+					}
+				}
+				# Long form configuration
+				ocsp_cache: {
+					type: local
+				}
+			`,
+			"local",
+		},
+		{
+			"Monitor local cache enabled, implicit default",
+			`
+				port: -1
+				http_port: 8222
+				tls: {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+					verify: true
+					# Long form configuration
+					ocsp_peer: {
+						verify: true
+					}
+				}
+				# Short form configuration
+				# ocsp_cache: true
+			`,
+			"local",
+		},
+		{
+			"Monitor none cache enabled, explicit cache false (short)",
+			`
+				port: -1
+				http_port: 8222
+				tls: {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+					verify: true
+					# Long form configuration
+					ocsp_peer: {
+						verify: true
+					}
+				}
+				# Short form configuration
+				ocsp_cache: false
+			`,
+			"",
+		},
+		{
+			"Monitor none cache enabled, explicit cache false (long)",
+			`
+				port: -1
+				http_port: 8222
+				tls: {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+					verify: true
+					# Long form configuration
+					ocsp_peer: {
+						verify: true
+					}
+				}
+				# Long form configuration
+				ocsp_cache: {
+					type: none
+				}
+			`,
+			"",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1539,11 +1426,9 @@ func TestOCSPResponseCacheMonitor(t *testing.T) {
 			conf := createConfFile(t, []byte(content))
 			s, _ := RunServerWithConfig(conf)
 			defer s.Shutdown()
-
 			v := monitorGetVarzHelper(t, 8222)
-
-			if v.OCSPResponseCache.Type == "" {
-				t.Fatalf("Expected OCSP Response Cache to have a type")
+			if v.OCSPResponseCache.Type != test.expect {
+				t.Fatalf("Expected OCSP Response Cache to be %s, got %s", test.expect, v.OCSPResponseCache.Type)
 			}
 		})
 	}
@@ -1555,19 +1440,17 @@ func TestOCSPResponseCacheChangeAndReload(t *testing.T) {
 	// Start with ocsp cache set to none
 	content := `
 		port: -1
-
 		http_port: 8222
-
 		tls {
 			cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 			key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 			ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 			timeout: 5
 			verify: true
-
+			# Short form configuration
 			ocsp_peer: true
 		}
-
+		# Long form configuration
 		ocsp_cache: {
 			type: none
 		}
@@ -1575,9 +1458,7 @@ func TestOCSPResponseCacheChangeAndReload(t *testing.T) {
 	conf := createConfFile(t, []byte(content))
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
-
 	v := monitorGetVarzHelper(t, 8222)
-
 	if v.OCSPResponseCache.Type != "" {
 		t.Fatalf("Expected OCSP Response Cache to have empty type in varz indicating none")
 	}
@@ -1585,19 +1466,17 @@ func TestOCSPResponseCacheChangeAndReload(t *testing.T) {
 	// Change to local cache
 	content = `
 		port: -1
-
 		http_port: 8222
-
 		tls {
 			cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 			key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
 			ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 			timeout: 5
 			verify: true
-
+			# Short form configuration
 			ocsp_peer: true
 		}
-
+		# Long form configuration
 		ocsp_cache: {
 			type: local
 		}
@@ -1609,9 +1488,7 @@ func TestOCSPResponseCacheChangeAndReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(2 * time.Second)
-
 	v = monitorGetVarzHelper(t, 8222)
-
 	if v.OCSPResponseCache.Type != "local" {
 		t.Fatalf("Expected OCSP Response Cache type to be local, got %q", v.OCSPResponseCache.Type)
 	}
@@ -1643,12 +1520,10 @@ func monitorGetVarzHelper(t *testing.T, httpPort int) *server.Varz {
 	if err != nil {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
-
 	v := server.Varz{}
 	if err := json.Unmarshal(body, &v); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
 	}
-
 	return &v
 }
 
@@ -1665,7 +1540,6 @@ func writeCacheFile(dir string, content []byte) error {
 
 // TestOCSPPeerPreserveRevokedCacheItem is test of the preserve_revoked cache policy
 func TestOCSPPeerPreserveRevokedCacheItem(t *testing.T) {
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1697,11 +1571,9 @@ func TestOCSPPeerPreserveRevokedCacheItem(t *testing.T) {
 					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 					timeout: 5
 					verify: true
-
 					# Turn on CA OCSP check so this revoked client should NOT be able to connect
 					ocsp_peer: true
 				}
-
 				# preserve revoked true
 				ocsp_cache: {
 					type: local
@@ -1732,11 +1604,9 @@ func TestOCSPPeerPreserveRevokedCacheItem(t *testing.T) {
 					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 					timeout: 5
 					verify: true
-
 					# Turn on CA OCSP check so this revoked client should NOT be able to connect
 					ocsp_peer: true
 				}
-
 				# preserve revoked true
 				ocsp_cache: {
 					type: local
@@ -1787,7 +1657,6 @@ func TestOCSPPeerPreserveRevokedCacheItem(t *testing.T) {
 			conf := createConfFile(t, []byte(content))
 			s, opts := RunServerWithConfig(conf)
 			defer s.Shutdown()
-
 			nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port), test.opts...)
 			if test.err == nil && err != nil {
 				t.Errorf("Expected to connect, got %v", err)
@@ -1801,7 +1670,6 @@ func TestOCSPPeerPreserveRevokedCacheItem(t *testing.T) {
 				return
 			}
 			defer nc.Close()
-
 			v := monitorGetVarzHelper(t, 8222)
 			responses := v.OCSPResponseCache.Responses
 			revokes := v.OCSPResponseCache.Revokes
@@ -1810,6 +1678,107 @@ func TestOCSPPeerPreserveRevokedCacheItem(t *testing.T) {
 			if !(responses == test.responses && revokes == test.revokes && goods == test.goods && unknowns == test.unknowns) {
 				t.Fatalf("Expected %d response, %d revoked, %d good, %d unknown; got [%d] and [%d] and [%d] and [%d]", test.responses, test.revokes, test.goods, test.unknowns, responses, revokes, goods, unknowns)
 			}
+		})
+	}
+}
+
+// TestOCSPStapleFeatureInterop is a test of a NATS client (AIA enabled at leaf and cert) connecting to a NATS Server
+// in which both ocsp_peer is enabled on NATS client connections (verify client) and the ocsp staple is enabled such
+// that the NATS Server will staple its own OCSP response and make available to the NATS client during handshake.
+func TestOCSPStapleFeatureInterop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
+	defer rootCAResponder.Shutdown(ctx)
+	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate2/intermediate2_cert.pem", ocsp.Good)
+
+	intermediateCA1Responder := newOCSPResponderIntermediateCA1(t)
+	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
+	defer intermediateCA1Responder.Shutdown(ctx)
+	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
+	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_cert.pem", ocsp.Good)
+
+	intermediateCA2Responder := newOCSPResponderIntermediateCA2(t)
+	intermediateCA2ResponderURL := fmt.Sprintf("http://%s", intermediateCA2Responder.Addr)
+	defer intermediateCA2Responder.Shutdown(ctx)
+	setOCSPStatus(t, intermediateCA2ResponderURL, "configs/certs/ocsp_peer/mini-ca/client2/UserB1_cert.pem", ocsp.Good)
+
+	for _, test := range []struct {
+		name      string
+		config    string
+		opts      []nats.Option
+		err       error
+		rerr      error
+		configure func()
+	}{
+		{
+			"Interop: mTLS OCSP peer check on inbound client connection, client of intermediate CA 1",
+			`
+				port: -1
+				ocsp_cache: true
+				ocsp: {
+					mode: always
+				}
+				tls: {
+					# cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_cert.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+					verify: true
+					# Long form configuration, non-default ca_timeout
+					ocsp_peer: {
+						verify: true
+						ca_timeout: 5
+						allowed_clockskew: 30
+					}
+				}
+			`,
+			[]nats.Option{
+				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
+				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
+			func() {},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// TODO(tgb) - come back to this test after fixing OCSP Staple issue https://github.com/nats-io/nats-server/issues/3773
+			//deleteLocalStore(t, "")
+			//test.configure()
+			//content := test.config
+			//conf := createConfFile(t, []byte(content))
+			//
+			//s, opts := RunServerWithConfig(conf)
+			//defer s.Shutdown()
+			//nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port), test.opts...)
+			//if test.err == nil && err != nil {
+			//	t.Errorf("Expected to connect, got %v", err)
+			//} else if test.err != nil && err == nil {
+			//	t.Errorf("Expected error on connect")
+			//} else if test.err != nil && err != nil {
+			//	// Error on connect was expected
+			//	if test.err.Error() != err.Error() {
+			//		t.Errorf("Expected error %s, got: %s", test.err, err)
+			//	}
+			//	return
+			//}
+			//defer nc.Close()
+			//nc.Subscribe("ping", func(m *nats.Msg) {
+			//	m.Respond([]byte("pong"))
+			//})
+			//nc.Flush()
+			//_, err = nc.Request("ping", []byte("ping"), 250*time.Millisecond)
+			//if test.rerr != nil && err == nil {
+			//	t.Errorf("Expected error getting response")
+			//} else if test.rerr == nil && err != nil {
+			//	t.Errorf("Expected response")
+			//}
 		})
 	}
 }
