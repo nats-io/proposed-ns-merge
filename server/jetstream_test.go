@@ -3128,12 +3128,12 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	cfg := mset.config()
 	// Make sure can't be negative.
 	cfg.Duplicates = -25 * time.Millisecond
-	if err := mset.update(&cfg); err == nil {
+	if err := mset.update(&cfg, false); err == nil {
 		t.Fatalf("Expected an error but got none")
 	}
 	// Make sure can't be longer than age if its set.
 	cfg.Duplicates = 2 * time.Hour
-	if err := mset.update(&cfg); err == nil {
+	if err := mset.update(&cfg, false); err == nil {
 		t.Fatalf("Expected an error but got none")
 	}
 
@@ -3180,7 +3180,7 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 
 	cfg = mset.config()
 	cfg.Duplicates = 100 * time.Millisecond
-	if err := mset.update(&cfg); err != nil {
+	if err := mset.update(&cfg, false); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
@@ -3208,7 +3208,7 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 
 	// Now test server restart
 	cfg.Duplicates = 30 * time.Minute
-	if err := mset.update(&cfg); err != nil {
+	if err := mset.update(&cfg, false); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	mset.purge(nil)
@@ -8035,13 +8035,13 @@ func TestJetStreamUpdateStream(t *testing.T) {
 
 			// Can't change name.
 			cfg.Name = "bar"
-			if err := mset.update(&cfg); err == nil || !strings.Contains(err.Error(), "name must match") {
+			if err := mset.update(&cfg, false); err == nil || !strings.Contains(err.Error(), "name must match") {
 				t.Fatalf("Expected error trying to update name")
 			}
 			// Can't change max consumers for now.
 			cfg = *c.mconfig
 			cfg.MaxConsumers = 10
-			if err := mset.update(&cfg); err == nil || !strings.Contains(err.Error(), "can not change") {
+			if err := mset.update(&cfg, false); err == nil || !strings.Contains(err.Error(), "can not change") {
 				t.Fatalf("Expected error trying to change MaxConsumers")
 			}
 			// Can't change storage types.
@@ -8051,25 +8051,25 @@ func TestJetStreamUpdateStream(t *testing.T) {
 			} else {
 				cfg.Storage = FileStorage
 			}
-			if err := mset.update(&cfg); err == nil || !strings.Contains(err.Error(), "can not change") {
+			if err := mset.update(&cfg, false); err == nil || !strings.Contains(err.Error(), "can not change") {
 				t.Fatalf("Expected error trying to change Storage")
 			}
 			// Can't change replicas > 1 for now.
 			cfg = *c.mconfig
 			cfg.Replicas = 10
-			if err := mset.update(&cfg); err == nil || !strings.Contains(err.Error(), "maximum replicas") {
+			if err := mset.update(&cfg, false); err == nil || !strings.Contains(err.Error(), "maximum replicas") {
 				t.Fatalf("Expected error trying to change Replicas")
 			}
 			// Can't have a template set for now.
 			cfg = *c.mconfig
 			cfg.Template = "baz"
-			if err := mset.update(&cfg); err == nil || !strings.Contains(err.Error(), "template") {
+			if err := mset.update(&cfg, false); err == nil || !strings.Contains(err.Error(), "template") {
 				t.Fatalf("Expected error trying to change Template owner")
 			}
 			// Can't change limits policy.
 			cfg = *c.mconfig
 			cfg.Retention = WorkQueuePolicy
-			if err := mset.update(&cfg); err == nil || !strings.Contains(err.Error(), "can not change") {
+			if err := mset.update(&cfg, false); err == nil || !strings.Contains(err.Error(), "can not change") {
 				t.Fatalf("Expected error trying to change Retention")
 			}
 
@@ -8098,7 +8098,7 @@ func TestJetStreamUpdateStream(t *testing.T) {
 			// Update msgs to higher.
 			cfg = *c.mconfig
 			cfg.MaxMsgs = int64(pending * 2)
-			if err := mset.update(&cfg); err != nil {
+			if err := mset.update(&cfg, false); err != nil {
 				t.Fatalf("Unexpected error %v", err)
 			}
 			if mset.config().MaxMsgs != cfg.MaxMsgs {
@@ -8109,7 +8109,7 @@ func TestJetStreamUpdateStream(t *testing.T) {
 			// Update msgs to lower.
 			cfg = *c.mconfig
 			cfg.MaxMsgs = int64(pending / 2)
-			if err := mset.update(&cfg); err != nil {
+			if err := mset.update(&cfg, false); err != nil {
 				t.Fatalf("Unexpected error %v", err)
 			}
 			if mset.config().MaxMsgs != cfg.MaxMsgs {
@@ -8119,7 +8119,7 @@ func TestJetStreamUpdateStream(t *testing.T) {
 			// Now do bytes.
 			cfg = *c.mconfig
 			cfg.MaxBytes = int64(pendingBytes / 4)
-			if err := mset.update(&cfg); err != nil {
+			if err := mset.update(&cfg, false); err != nil {
 				t.Fatalf("Unexpected error %v", err)
 			}
 			if mset.config().MaxBytes != cfg.MaxBytes {
@@ -8130,7 +8130,7 @@ func TestJetStreamUpdateStream(t *testing.T) {
 			// Now do age.
 			cfg = *c.mconfig
 			cfg.MaxAge = 100 * time.Millisecond
-			if err := mset.update(&cfg); err != nil {
+			if err := mset.update(&cfg, false); err != nil {
 				t.Fatalf("Unexpected error %v", err)
 			}
 			// Just wait a bit for expiration.
@@ -8142,7 +8142,7 @@ func TestJetStreamUpdateStream(t *testing.T) {
 
 			// Now put back to original.
 			cfg = *c.mconfig
-			if err := mset.update(&cfg); err != nil {
+			if err := mset.update(&cfg, false); err != nil {
 				t.Fatalf("Unexpected error %v", err)
 			}
 			for i := uint64(0); i < pending; i++ {
@@ -8153,7 +8153,7 @@ func TestJetStreamUpdateStream(t *testing.T) {
 			// Add in a subject first.
 			cfg = *c.mconfig
 			cfg.Subjects = []string{"foo", "bar"}
-			if err := mset.update(&cfg); err != nil {
+			if err := mset.update(&cfg, false); err != nil {
 				t.Fatalf("Unexpected error %v", err)
 			}
 			// Make sure we can still send to foo.
@@ -8162,7 +8162,7 @@ func TestJetStreamUpdateStream(t *testing.T) {
 			sendStreamMsg(t, nc, "bar", "0123456789")
 			// Now delete both and change to baz only.
 			cfg.Subjects = []string{"baz"}
-			if err := mset.update(&cfg); err != nil {
+			if err := mset.update(&cfg, false); err != nil {
 				t.Fatalf("Unexpected error %v", err)
 			}
 			// Make sure we do not get response acks for "foo" or "bar".
@@ -8185,7 +8185,7 @@ func TestJetStreamUpdateStream(t *testing.T) {
 				cfg.MaxMsgs = 2222
 				cfg.MaxBytes = 3333333
 				cfg.MaxAge = 22 * time.Hour
-				if err := mset.update(&cfg); err != nil {
+				if err := mset.update(&cfg, false); err != nil {
 					t.Fatalf("Unexpected error %v", err)
 				}
 				// Pull since certain defaults etc are set in processing.
@@ -20984,7 +20984,7 @@ func TestJetStreamConsumerDefaultsFromStream(t *testing.T) {
 			Name:               "test",
 			Subjects:           []string{"test.*"},
 			LimitMaxAckPending: 10,
-		})
+		}, false)
 		if err == nil {
 			t.Fatalf("stream update should have errored but didn't")
 		}
@@ -21004,9 +21004,45 @@ func TestJetStreamConsumerDefaultsFromStream(t *testing.T) {
 			Name:                   "test",
 			Subjects:               []string{"test.*"},
 			LimitInactiveThreshold: time.Second / 2,
-		})
+		}, false)
 		if err == nil {
 			t.Fatalf("stream update should have errored but didn't")
 		}
+	})
+
+	t.Run("UpdateStreamSuccessOnForceConsumerMaxAckPending", func(t *testing.T) {
+		_, err := js.AddConsumer("test", &nats.ConsumerConfig{
+			Name:          "UpdateStreamSuccessOnForceConsumerMaxAckPending",
+			MaxAckPending: 15,
+		})
+		require_NoError(t, err)
+
+		stream, err := acc.lookupStream("test")
+		require_NoError(t, err)
+
+		err = stream.update(&StreamConfig{
+			Name:               "test",
+			Subjects:           []string{"test.*"},
+			LimitMaxAckPending: 10,
+		}, true)
+		require_NoError(t, err)
+	})
+
+	t.Run("UpdateStreamSuccessOnForceConsumerInactiveThreshold", func(t *testing.T) {
+		_, err := js.AddConsumer("test", &nats.ConsumerConfig{
+			Name:              "UpdateStreamErrorOnViolateConsumerInactiveThreshold",
+			InactiveThreshold: time.Second,
+		})
+		require_NoError(t, err)
+
+		stream, err := acc.lookupStream("test")
+		require_NoError(t, err)
+
+		err = stream.update(&StreamConfig{
+			Name:                   "test",
+			Subjects:               []string{"test.*"},
+			LimitInactiveThreshold: time.Second / 2,
+		}, true)
+		require_NoError(t, err)
 	})
 }

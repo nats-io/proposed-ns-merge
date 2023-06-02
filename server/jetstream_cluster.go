@@ -3363,7 +3363,8 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			js.mu.Unlock()
 		}
 		// Call update.
-		if err = mset.updateWithAdvisory(cfg, !recovering); err != nil {
+		// TODO(nat): replace false here with a forced flag
+		if err = mset.updateWithAdvisory(cfg, !recovering, false); err != nil {
 			s.Warnf("JetStream cluster error updating stream %q for account %q: %v", cfg.Name, acc.Name, err)
 		}
 		// Set the new stream assignment.
@@ -3508,7 +3509,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 				}
 			}
 			mset.setStreamAssignment(sa)
-			if err = mset.updateWithAdvisory(sa.Config, false); err != nil {
+			if err = mset.updateWithAdvisory(sa.Config, false, false); err != nil {
 				s.Warnf("JetStream cluster error updating stream %q for account %q: %v", sa.Config.Name, acc.Name, err)
 				if osa != nil {
 					// Process the raft group and make sure it's running if needed.

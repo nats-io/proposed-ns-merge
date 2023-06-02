@@ -1455,7 +1455,8 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 		return
 	}
 
-	if err := mset.update(&cfg); err != nil {
+	// TODO(nat): replace false here with a forced flag
+	if err := mset.update(&cfg, false); err != nil {
 		resp.Error = NewJSStreamUpdateError(err, Unless(err))
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
