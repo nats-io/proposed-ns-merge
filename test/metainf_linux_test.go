@@ -102,6 +102,11 @@ func TestLinuxServerMetaScenarios(t *testing.T) {
 	jsStateDir := "/home/todd/lab/metainf-linux/jsstate"
 	logFile := "/home/todd/lab/metainf-linux/nats-server.log"
 
+	var jc nats.JetStreamContext
+	var nc *nats.Conn
+	var err error
+	var strInfo *nats.StreamInfo
+
 	testCases := []struct {
 		testName   string
 		svcName    string
@@ -182,10 +187,11 @@ func TestLinuxServerMetaScenarios(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		t.Run(fmt.Sprintf("%s", tc.testName), func(t *testing.T) {
-			err := os.RemoveAll(jsStateDir + string(os.PathSeparator) + "jetstream")
+			err = os.RemoveAll(jsStateDir + string(os.PathSeparator) + "jetstream")
 			if err != nil {
 				t.Fatalf("expected to be able to remove jetstream dir: %s", err.Error())
 			}
+
 			conf := fmt.Sprintf(tc.svrConfig, tc.logFile, tc.jsStateDir)
 			println(conf)
 			println("createNatsService...")
@@ -195,22 +201,25 @@ func TestLinuxServerMetaScenarios(t *testing.T) {
 				// killTaskByPID(t, tc.svcName)
 			}()
 			time.Sleep(5 * time.Second)
-			nc, err := nats.Connect("nats://UserA1:s3cr3t@localhost:4322", nil)
+			nc, err = nats.Connect("nats://UserA1:s3cr3t@localhost:4322", nil)
 			if err != nil {
 				t.Errorf("Expected to connect, got %v", err)
+				goto BAILOUT
 			}
-			jc, err := nc.JetStream()
+			jc, err = nc.JetStream()
 			if err != nil {
 				t.Errorf("Expected to connect to JetStream, got %v", err)
+				goto BAILOUT
 			}
 			// existing stream okay
-			strInfo, err := jc.AddStream(&nats.StreamConfig{
+			strInfo, err = jc.AddStream(&nats.StreamConfig{
 				Name:     "foo",
 				Subjects: []string{"foo.*"},
 				Storage:  nats.FileStorage,
 			})
 			if err != nil || strInfo == nil {
 				t.Errorf("Expected to create stream, got %v", err)
+				goto BAILOUT
 			}
 			if strInfo.State.Msgs != 100000 {
 				p := make([]byte, 16384)
@@ -232,6 +241,7 @@ func TestLinuxServerMetaScenarios(t *testing.T) {
 				strInfo, err = jc.StreamInfo("foo")
 				if err != nil || strInfo == nil {
 					t.Errorf("Expected to get stream info, got %v", err)
+					goto BAILOUT
 				}
 				if strInfo.State.Msgs != 100000 {
 					t.Errorf("Expected 100000 messages, got %v", strInfo.State.Msgs)
@@ -258,20 +268,26 @@ func TestLinuxServerMetaScenarios(t *testing.T) {
 			nc, err = nats.Connect("nats://UserA1:s3cr3t@localhost:4322", nil)
 			if err != nil {
 				t.Errorf("Expected to connect, got %v", err)
+				goto BAILOUT
 			}
 			jc, err = nc.JetStream()
 			if err != nil {
 				t.Errorf("Expected to connect to JetStream, got %v", err)
+				goto BAILOUT
 			}
 			strInfo, err = jc.StreamInfo("foo")
 			if err != nil {
 				t.Errorf("Expected to get stream info, got %v", err)
+				goto BAILOUT
 			}
 			if strInfo.State.Msgs != 100000 {
 				t.Errorf("Expected 100000 messages, got %v", strInfo.State.Msgs)
 			}
+
 			nc.Close()
-			println("stopNatsService 2...")
+
+		BAILOUT:
+			println("stopNatsService final...")
 			stopNatsService(t, tc.svcName, natsExec)
 			time.Sleep(5 * time.Second)
 		})
