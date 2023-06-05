@@ -286,14 +286,15 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 		ocspr, err = ocsp.ParseResponse(rawResp, link.Issuer)
 		if err == nil && ocspr != nil {
 			if certidp.OCSPResponseCurrent(ocspr, opts, sLogs) {
-				s.Debugf(certidp.DbgCurrentResponseCached)
+				s.Debugf(certidp.DbgCurrentResponseCached, certidp.GetStatusAssertionStr(ocspr.Status))
 				useCachedResp = true
 			} else {
 				// Cached response is not current, delete it and tidy runtime stats to reflect a miss;
 				// if preserve_revoked is enabled, the cache will not delete the cached response
-				s.Debugf(certidp.DbgExpiredResponseCached)
+				s.Debugf(certidp.DbgExpiredResponseCached, certidp.GetStatusAssertionStr(ocspr.Status))
 				rc.Delete(fingerprint, true, sLogs)
 			}
+			// Regardless of currency, record a cached revocation found in case AllowWhenCAUnreachable is set
 			if ocspr.Status == ocsp.Revoked {
 				cachedRevocation = true
 			}
@@ -304,13 +305,17 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 		rawResp, err = certidp.FetchOCSPResponse(link, opts, sLogs)
 		if err != nil || rawResp == nil || len(rawResp) == 0 {
 			s.Warnf(certidp.ErrCAResponderCalloutFail, subj, err)
-			if opts.AllowWhenCAUnreachable && !cachedRevocation {
-				s.Warnf(certidp.MsgAllowWhenCAUnreachableOccurred, subj)
-				return _EMPTY_, true
-			}
 			if opts.WarnOnly {
 				s.Warnf(certidp.MsgAllowWarnOnlyOccurred, subj)
 				return _EMPTY_, true
+			}
+			if opts.AllowWhenCAUnreachable && !cachedRevocation {
+				// Link has no cached history of revocation, so allow it to pass
+				s.Warnf(certidp.MsgAllowWhenCAUnreachableOccurred, subj)
+				return _EMPTY_, true
+			} else if opts.AllowWhenCAUnreachable {
+				// Link has cached but expired revocation so reject when CA is unreachable
+				s.Warnf(certidp.MsgAllowWhenCAUnreachableOccurredCachedRevoke, subj)
 			}
 			return certidp.MsgFailedOCSPResponseFetch, false
 		}

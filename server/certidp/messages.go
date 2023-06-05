@@ -54,8 +54,8 @@ var (
 	DbgChainIsOCSPValid      = "Chain [%d] is OCSP valid for all eligible links, thus peer is valid"
 	DbgNoOCSPValidChains     = "No OCSP valid chains, thus peer is invalid"
 	DbgCheckingCacheForCert  = "Checking OCSP peer cache for [%s], key [%s]"
-	DbgCurrentResponseCached = "Cached OCSP response is current and will be used"
-	DbgExpiredResponseCached = "Cached OCSP response is expired and will be used"
+	DbgCurrentResponseCached = "Cached OCSP response is current, status [%s]"
+	DbgExpiredResponseCached = "Cached OCSP response is expired, status [%s]"
 	DbgOCSPValidPeerLink     = "OCSP verify pass for [%s]"
 	DbgCachingResponse       = "Caching OCSP response for [%s], key [%s]"
 	DbgAchievedCompression   = "OCSP response compression ratio: [%f]"
@@ -84,8 +84,9 @@ var (
 	ErrOCSPInvalidPeerLink     = "OCSP verify fail for [%s] with CA status [%s]"
 
 	// Policy override warnings (direct logged)
-	MsgAllowWhenCAUnreachableOccurred = "Failed to obtain OCSP CA response for [%s] but AllowWhenCAUnreachable is true and no cached revocation so allowing"
-	MsgAllowWarnOnlyOccurred          = "OCSP verify fail for [%s] but WarnOnly is true so allowing"
+	MsgAllowWhenCAUnreachableOccurred             = "Failed to obtain OCSP CA response for [%s] but AllowWhenCAUnreachable set; no cached revocation so allowing"
+	MsgAllowWhenCAUnreachableOccurredCachedRevoke = "Failed to obtain OCSP CA response for [%s] but AllowWhenCAUnreachable set; cached revocation exists so rejecting"
+	MsgAllowWarnOnlyOccurred                      = "OCSP verify fail for [%s] but WarnOnly is true so allowing"
 
 	// Info (direct logged)
 	MsgCacheOnline  = "OCSP peer cache online, type [%s]"
