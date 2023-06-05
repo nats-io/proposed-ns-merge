@@ -37,6 +37,8 @@ const (
 	OCSPResponseCacheDefaultDir            = "_rc_"
 	OCSPResponseCacheDefaultFilename       = "cache.json"
 	OCSPResponseCacheDefaultTempFilePrefix = "ocsprc-*"
+	OCSPResponseCacheMinimumSaveInterval   = 1 * time.Second
+	OCSPResponseCacheDefaultSaveInterval   = 5 * time.Minute
 )
 
 type OCSPResponseCacheType int
@@ -55,6 +57,7 @@ type OCSPResponseCacheConfig struct {
 	Type            OCSPResponseCacheType
 	LocalStore      string
 	PreserveRevoked bool
+	SaveInterval    float64
 }
 
 type OCSPResponseCacheStats struct {
@@ -134,11 +137,14 @@ func (c *NoOpCache) Stats() *OCSPResponseCacheStats {
 
 // LocalCache is a local file implementation of OCSPResponseCache
 type LocalCache struct {
-	config *OCSPResponseCacheConfig
-	stats  *OCSPResponseCacheStats
-	online bool
-	cache  map[string]OCSPResponseCacheItem
-	mux    *sync.RWMutex
+	config       *OCSPResponseCacheConfig
+	stats        *OCSPResponseCacheStats
+	online       bool
+	cache        map[string]OCSPResponseCacheItem
+	mux          *sync.RWMutex
+	saveInterval time.Duration
+	dirty        bool
+	timer        *time.Timer
 }
 
 // Put captures a CA OCSP response to the OCSP peer cache indexed by response fingerprint (a hash)
@@ -169,6 +175,7 @@ func (c *LocalCache) Put(key string, caResp *ocsp.Response, subj string, log *ce
 	}
 	c.cache[key] = item
 	c.adjustStats(1, item.RespStatus)
+	c.dirty = true
 }
 
 // Get returns a CA OCSP response from the OCSP peer cache matching the response fingerprint (a hash)
@@ -239,6 +246,7 @@ func (c *LocalCache) Delete(key string, wasMiss bool, log *certidp.Log) {
 	if wasMiss {
 		c.adjustStatsHitToMiss()
 	}
+	c.dirty = true
 }
 
 // Start initializes the configured OCSP peer cache, loads a saved cache from disk (if present), and initializes runtime statistics
@@ -253,8 +261,8 @@ func (c *LocalCache) Start(s *Server) {
 func (c *LocalCache) Stop(s *Server) {
 	s.Debugf(certidp.DbgStoppingCache)
 	c.online = false
+	c.timer.Stop()
 	c.saveCache(s)
-	return
 }
 
 func (c *LocalCache) Online() bool {
@@ -363,12 +371,26 @@ func (c *LocalCache) loadCache(s *Server) {
 		// make sure clean cache
 		c.cache = make(map[string]OCSPResponseCacheItem)
 		s.Warnf(certidp.ErrLoadCacheFail, err)
+		c.dirty = true
 		return
 	}
+	c.dirty = false
 }
 
 func (c *LocalCache) saveCache(s *Server) {
-	d := OCSPResponseCacheDefaultDir
+	c.mux.RLock()
+	dirty := c.dirty
+	c.mux.RUnlock()
+	if !dirty {
+		return
+	}
+	s.Debugf(certidp.DbgCacheDirtySave)
+	var d string
+	if c.config.LocalStore != _EMPTY_ {
+		d = c.config.LocalStore
+	} else {
+		d = OCSPResponseCacheDefaultDir
+	}
 	f := OCSPResponseCacheDefaultFilename
 	store, err := filepath.Abs(path.Join(d, f))
 	if err != nil {
@@ -392,8 +414,10 @@ func (c *LocalCache) saveCache(s *Server) {
 		tmp.Close()
 		os.Remove(tmp.Name())
 	}() // clean up any temp files
-	c.mux.RLock()
-	defer c.mux.RUnlock()
+
+	// RW lock here because we're going to snapshot the cache to disk and mark as clean if successful
+	c.mux.Lock()
+	defer c.mux.Unlock()
 	dat, err := json.MarshalIndent(c.cache, "", " ")
 	if err != nil {
 		s.Errorf(certidp.ErrSaveCacheFail, err)
@@ -420,6 +444,7 @@ func (c *LocalCache) saveCache(s *Server) {
 		s.Errorf(certidp.ErrSaveCacheFail, err)
 		return
 	}
+	c.dirty = false
 	s.Debugf(certidp.DbgCacheSaved, cacheSize)
 }
 
@@ -467,12 +492,28 @@ func (s *Server) initOCSPResponseCache() {
 	case NONE:
 		s.ocsprc = &NoOpCache{config: cc, online: true}
 	case LOCAL:
-		s.ocsprc = &LocalCache{
+		c := &LocalCache{
 			config: cc,
 			online: false,
 			cache:  make(map[string]OCSPResponseCacheItem),
 			mux:    &sync.RWMutex{},
+			dirty:  false,
 		}
+		ccsi := time.Duration(cc.SaveInterval) * time.Second
+		switch {
+		case ccsi == 0:
+			c.saveInterval = OCSPResponseCacheDefaultSaveInterval
+		case ccsi < OCSPResponseCacheMinimumSaveInterval:
+			c.saveInterval = OCSPResponseCacheMinimumSaveInterval
+		default:
+			c.saveInterval = ccsi
+		}
+		c.timer = time.AfterFunc(c.saveInterval, func() {
+			s.Debugf(certidp.DbgCacheSaveTimerExpired)
+			c.saveCache(s)
+			c.timer.Reset(c.saveInterval)
+		})
+		s.ocsprc = c
 	default:
 		s.Fatalf(certidp.ErrBadCacheTypeConfig, cc.Type)
 	}
@@ -538,6 +579,23 @@ func parseOCSPResponseCache(v interface{}) (pcfg *OCSPResponseCacheConfig, retEr
 				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingCacheOptFieldGeneric, mk)}
 			}
 			pcfg.PreserveRevoked = preserve
+		case "save_interval":
+			at := float64(0)
+			switch mv := mv.(type) {
+			case int64:
+				at = float64(mv)
+			case float64:
+				at = mv
+			case string:
+				d, err := time.ParseDuration(mv)
+				if err != nil {
+					return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, err)}
+				}
+				at = d.Seconds()
+			default:
+				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingCacheOptFieldTypeConversion, "unexpected type")}
+			}
+			pcfg.SaveInterval = at
 		default:
 			return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingCacheOptFieldGeneric, mk)}
 		}

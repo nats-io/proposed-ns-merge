@@ -2212,3 +2212,290 @@ func TestOCSPPeerAllowWhenCAUnreachableOption(t *testing.T) {
 		})
 	}
 }
+
+// TestOCSPResponseCacheLocalStoreOption is test of default and non-default local_store option
+func TestOCSPResponseCacheLocalStoreOpt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
+	defer rootCAResponder.Shutdown(ctx)
+	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+
+	for _, test := range []struct {
+		name           string
+		config         string
+		opts           []nats.Option
+		cachedResponse string
+		err            error
+		rerr           error
+		storeLocation  string
+	}{
+		{
+			"Test load from non-default local store _custom_; connect will reject only if cache file found and loaded",
+			`
+				port: -1
+				http_port: 8222
+				tls: {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+					verify: true
+					# Turn on CA OCSP check but allow when CA is unreachable
+					ocsp_peer: {
+						verify: true
+						ca_timeout: 0.5
+						allow_when_ca_unreachable: true
+					}
+				}
+				# preserve revoked true
+				ocsp_cache: {
+					type: local
+					local_store: "_custom_"
+					preserve_revoked: true
+				}
+			`,
+			[]nats.Option{
+				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
+				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			`
+				{
+					"5xL/SuHl6JN0OmxrNMpzVMTA73JVYcRfGX8+HvJinEI=": {
+						"subject": "CN=UserA1,O=Testnats,L=Tacoma,ST=WA,C=US",
+						"cached_at": "2023-05-29T17:56:45Z",
+						"resp_status": "revoked",
+						"resp_expires": "2023-05-29T17:56:49Z",
+						"resp": "/wYAAFMyc1R3TwBSBQBao1Qr1QzUMIIGUQoBAKCCBkowggZGBgkrBgEFBQcwAQEEggY3MIIGMzCB46FZMFcxCzAJBgNVBAYTAlVTEQ0gCAwCV0ExDzANAQ0wBwwGVGFjb21hMREwDwEROAoMCFRlc3RuYXRzMRcwFQET8HQDDA5PQ1NQIFJlc3BvbmRlchgPMjAyMzA1MjkxNzU2MDBaMHUwczBNMAkGBSsOAwIaBQAEFKgwn5fplwQy+DsulBg5SRpx0iaYBBS1kW5PZLcWhHb5tL6ZzmCVmBqOnQIUXKGv1Xy7Fu/Cx+ZT/JQa7SS7tBc2ZAAQNDVaoBE2dwD0QQE0OVowDQYJKoZIhvcNAQELBQADggEBAGAax/vkv3SBFNbxp2utc/N6Rje4E0ceC972sWgqYjzYrH0oc/acg+OAXaxUjwqoQWaT+dHaI4D5qoTkMx7XlWATjI2L72IUTf6Luo92jPzyDFwb10CdeFHtRtEYD54Qbi/nD4oxQ8cSoLKC3wft2l3E/mK/1I4Mxwq15CioK4MhfzTISoeGZbjDXPKgloJOG3rn9v64vFGV6dosbLgaXEs+MPcCsPQYkwhOOyazuewRmIDOBp5QSsKPhqsT8Rs20t8LGTMkvjZniFWJs90l9QL9F1m3obq5nyuxrGt+7Rf5zoj4T+0XCOGtE+b7cRCLg43tFuTbaAQG8Z+qkPzpza+gggQ1MIIEMTCCBC0wggMVoAMCAQICFCnhUo39pSqH6x3kHUds4YpYaXOrOj8BBDBaUSLaLwIIGjAYSS+oEUludGVybWVkaWF0ZSBDQSAxMB4XDTIzMDUwMTE5MjgzOVoXDTMzMDQyOA0PUasVAEkMMIIBIi4nAgABBQD0QAEPADCCAQoCggEBAKMMyuuA66EOHnGb07P5Zc5wwiEGPDHBBn6lqErhIaN0VJ9XzlDWwyk8Q7CdPlSU7o36DXFs316eATB5bLuXXa+7WwV3cp9V5mZF9OLCz3sOWNYUanYprOMwKA3uvcqqrh8e70Dzw6sX8tfsDeH7aJoJg5kRWEKU+A3Umm+fO+hW8Km3GBqRQXxD49uxAfGtCznXZZjmFbAXqVZu+4R6wMxndfz2dYQxeMVtUY/QGdMWT4fvWzO5et3+X6hq/URUAPOkplv9O2U4T4JPucS9yZpW/FTxWC/L7vQI/bfsrSgIZpv4eJgy27FW3Q4xusbjVvUCL/t2KLvEi/Nr2qodOCECAwEAAaOB7TCB6jAdBgNVHQ4EFgQUy15QYHqrL6k7HiSrAkKN7IFgSBMwHwYDVR0jBBgwFoBSyQNQMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQ4YBAMCB4AwFgEeACUBEBAMMAoGCIm0sAMJMD0GA1UdHwQ2MDQwMqAwoC6GLGh0dHA6Ly8xMjcuMC4wLjE6MTg4ODgvaV1WKDFfY3JsLmRlcjAzEUscAQEEJzAlMCMRWwwwAYYXWkoALhICkTnw/0hlzm2RRjA3tvJ2wELj9e7pMg5GtdWdrLDyI/U1qBxhZoHADbyku7W+R1iL8dFfc4PSmdo+owsygZakvahXjv49xJNX7wV3YMmIHC4lfurIlY2mSnPlu2zEOwEDkI0S9WkTxXmHrkXLSciQJDkwzye6MR5fW+APk4JmKDPc46Go/K1A0EgxY/ugahMYsYtZu++W+IOYbEoYNxoCrcJCHX4c3Ep3t/Wulz4X6DWWhaDkMMUDC2JVE8E/3xUbw0X3adZe9Xf8T+goOz7wLCAigXKj1hvRUmOGISIGelv0KsfluZesG1a1TGLp+W9JX0M9nOaFOvjJTDP96aqIjs8oXGk="
+					}
+				}`,
+			errors.New("remote error: tls: bad certificate"),
+			errors.New("expect error"),
+			"_custom_",
+		},
+		{
+			"Test load from default local store when \"\" set; connect will reject only if cache file found and loaded",
+			`
+				port: -1
+				http_port: 8222
+				tls: {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+					verify: true
+					# Turn on CA OCSP check but allow when CA is unreachable
+					ocsp_peer: {
+						verify: true
+						ca_timeout: 0.5
+						allow_when_ca_unreachable: true
+					}
+				}
+				# preserve revoked true
+				ocsp_cache: {
+					type: local
+					local_store: ""
+					preserve_revoked: true
+				}
+			`,
+			[]nats.Option{
+				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
+				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			`
+				{
+					"5xL/SuHl6JN0OmxrNMpzVMTA73JVYcRfGX8+HvJinEI=": {
+						"subject": "CN=UserA1,O=Testnats,L=Tacoma,ST=WA,C=US",
+						"cached_at": "2023-05-29T17:56:45Z",
+						"resp_status": "revoked",
+						"resp_expires": "2023-05-29T17:56:49Z",
+						"resp": "/wYAAFMyc1R3TwBSBQBao1Qr1QzUMIIGUQoBAKCCBkowggZGBgkrBgEFBQcwAQEEggY3MIIGMzCB46FZMFcxCzAJBgNVBAYTAlVTEQ0gCAwCV0ExDzANAQ0wBwwGVGFjb21hMREwDwEROAoMCFRlc3RuYXRzMRcwFQET8HQDDA5PQ1NQIFJlc3BvbmRlchgPMjAyMzA1MjkxNzU2MDBaMHUwczBNMAkGBSsOAwIaBQAEFKgwn5fplwQy+DsulBg5SRpx0iaYBBS1kW5PZLcWhHb5tL6ZzmCVmBqOnQIUXKGv1Xy7Fu/Cx+ZT/JQa7SS7tBc2ZAAQNDVaoBE2dwD0QQE0OVowDQYJKoZIhvcNAQELBQADggEBAGAax/vkv3SBFNbxp2utc/N6Rje4E0ceC972sWgqYjzYrH0oc/acg+OAXaxUjwqoQWaT+dHaI4D5qoTkMx7XlWATjI2L72IUTf6Luo92jPzyDFwb10CdeFHtRtEYD54Qbi/nD4oxQ8cSoLKC3wft2l3E/mK/1I4Mxwq15CioK4MhfzTISoeGZbjDXPKgloJOG3rn9v64vFGV6dosbLgaXEs+MPcCsPQYkwhOOyazuewRmIDOBp5QSsKPhqsT8Rs20t8LGTMkvjZniFWJs90l9QL9F1m3obq5nyuxrGt+7Rf5zoj4T+0XCOGtE+b7cRCLg43tFuTbaAQG8Z+qkPzpza+gggQ1MIIEMTCCBC0wggMVoAMCAQICFCnhUo39pSqH6x3kHUds4YpYaXOrOj8BBDBaUSLaLwIIGjAYSS+oEUludGVybWVkaWF0ZSBDQSAxMB4XDTIzMDUwMTE5MjgzOVoXDTMzMDQyOA0PUasVAEkMMIIBIi4nAgABBQD0QAEPADCCAQoCggEBAKMMyuuA66EOHnGb07P5Zc5wwiEGPDHBBn6lqErhIaN0VJ9XzlDWwyk8Q7CdPlSU7o36DXFs316eATB5bLuXXa+7WwV3cp9V5mZF9OLCz3sOWNYUanYprOMwKA3uvcqqrh8e70Dzw6sX8tfsDeH7aJoJg5kRWEKU+A3Umm+fO+hW8Km3GBqRQXxD49uxAfGtCznXZZjmFbAXqVZu+4R6wMxndfz2dYQxeMVtUY/QGdMWT4fvWzO5et3+X6hq/URUAPOkplv9O2U4T4JPucS9yZpW/FTxWC/L7vQI/bfsrSgIZpv4eJgy27FW3Q4xusbjVvUCL/t2KLvEi/Nr2qodOCECAwEAAaOB7TCB6jAdBgNVHQ4EFgQUy15QYHqrL6k7HiSrAkKN7IFgSBMwHwYDVR0jBBgwFoBSyQNQMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQ4YBAMCB4AwFgEeACUBEBAMMAoGCIm0sAMJMD0GA1UdHwQ2MDQwMqAwoC6GLGh0dHA6Ly8xMjcuMC4wLjE6MTg4ODgvaV1WKDFfY3JsLmRlcjAzEUscAQEEJzAlMCMRWwwwAYYXWkoALhICkTnw/0hlzm2RRjA3tvJ2wELj9e7pMg5GtdWdrLDyI/U1qBxhZoHADbyku7W+R1iL8dFfc4PSmdo+owsygZakvahXjv49xJNX7wV3YMmIHC4lfurIlY2mSnPlu2zEOwEDkI0S9WkTxXmHrkXLSciQJDkwzye6MR5fW+APk4JmKDPc46Go/K1A0EgxY/ugahMYsYtZu++W+IOYbEoYNxoCrcJCHX4c3Ep3t/Wulz4X6DWWhaDkMMUDC2JVE8E/3xUbw0X3adZe9Xf8T+goOz7wLCAigXKj1hvRUmOGISIGelv0KsfluZesG1a1TGLp+W9JX0M9nOaFOvjJTDP96aqIjs8oXGk="
+					}
+				}`,
+			errors.New("remote error: tls: bad certificate"),
+			errors.New("expect error"),
+			"_rc_",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			deleteLocalStore(t, test.storeLocation)
+			c := []byte(test.cachedResponse)
+			err := writeCacheFile(test.storeLocation, c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			content := test.config
+			conf := createConfFile(t, []byte(content))
+			s, opts := RunServerWithConfig(conf)
+			defer s.Shutdown()
+			nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port), test.opts...)
+			if test.err == nil && err != nil {
+				t.Errorf("Expected to connect, got %v", err)
+			} else if test.err != nil && err == nil {
+				t.Errorf("Expected error on connect")
+			} else if test.err != nil && err != nil {
+				// Error on connect was expected
+				if test.err.Error() != err.Error() {
+					t.Errorf("Expected error %s, got: %s", test.err, err)
+				}
+				return
+			}
+			defer nc.Close()
+		})
+	}
+}
+
+// TestOCSPPeerIncrementalSaveLocalCache is test of timer-based response cache save as new entries added
+func TestOCSPPeerIncrementalSaveLocalCache(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
+	defer rootCAResponder.Shutdown(ctx)
+	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate2/intermediate2_cert.pem", ocsp.Good)
+
+	intermediateCA1Responder := newOCSPResponderIntermediateCA1(t)
+	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
+	defer intermediateCA1Responder.Shutdown(ctx)
+	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
+
+	intermediateCA2Responder := newOCSPResponderIntermediateCA2(t)
+	intermediateCA2ResponderURL := fmt.Sprintf("http://%s", intermediateCA2Responder.Addr)
+	defer intermediateCA2Responder.Shutdown(ctx)
+	setOCSPStatus(t, intermediateCA2ResponderURL, "configs/certs/ocsp_peer/mini-ca/client2/UserB1_cert.pem", ocsp.Good)
+
+	var fi os.FileInfo
+	var err error
+
+	for _, test := range []struct {
+		name      string
+		config    string
+		opts      [][]nats.Option
+		err       error
+		rerr      error
+		configure func()
+	}{
+		{
+			"Default cache, short form: mTLS OCSP peer check on inbound client connection, UserA1 client of intermediate CA 1",
+			`
+				port: -1
+				http_port: 8222
+				tls: {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+					verify: true
+					# Long form configuration
+					ocsp_peer: {
+						verify: true
+						ca_timeout: 5
+						allowed_clockskew: 30
+					}
+				}
+				# Local cache with custom save_interval for testability
+				ocsp_cache: {
+					type: local
+					# Save if dirty ever 1 second
+					save_interval: 1
+				}
+			`,
+			[][]nats.Option{
+				[]nats.Option{
+					nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
+					nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
+					nats.ErrorHandler(noOpErrHandler),
+				},
+				[]nats.Option{
+					nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client2/UserB1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client2/private/UserB1_keypair.pem"),
+					nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
+					nats.ErrorHandler(noOpErrHandler),
+				},
+			},
+			nil,
+			nil,
+			func() {},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// Cleanup any previous test that saved a local cache
+			deleteLocalStore(t, "")
+			fi, err = statCacheFile("")
+			if err != nil && fi != nil && fi.Size() != 0 {
+				t.Fatalf("Expected no local cache file, got a FileInfo with size %d", fi.Size())
+			}
+			test.configure()
+			content := test.config
+			conf := createConfFile(t, []byte(content))
+			s, opts := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			// Connect with UserA1 client and get a CA Response
+			nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port), test.opts[0]...)
+			if test.err == nil && err != nil {
+				t.Errorf("Expected to connect, got %v", err)
+			} else if test.err != nil && err == nil {
+				t.Errorf("Expected error on connect")
+			} else if test.err != nil && err != nil {
+				// Error on connect was expected
+				if test.err.Error() != err.Error() {
+					t.Errorf("Expected error %s, got: %s", test.err, err)
+				}
+				return
+			}
+			nc.Close()
+			time.Sleep(2 * time.Second)
+			fi, err = statCacheFile("")
+			if err == nil && fi != nil && fi.Size() > 0 {
+				// good
+			} else {
+				if err != nil {
+					t.Fatalf("Expected an extant local cache file, got error: %v", err)
+				}
+				if fi != nil {
+					t.Fatalf("Expected non-zero size local cache file, got a FileInfo with size %d", fi.Size())
+				}
+			}
+			firstFi := fi
+			// Connect with UserB1 client and get another CA Response
+			nc, err = nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port), test.opts[1]...)
+			if test.err == nil && err != nil {
+				t.Errorf("Expected to connect, got %v", err)
+			} else if test.err != nil && err == nil {
+				t.Errorf("Expected error on connect")
+			} else if test.err != nil && err != nil {
+				// Error on connect was expected
+				if test.err.Error() != err.Error() {
+					t.Errorf("Expected error %s, got: %s", test.err, err)
+				}
+				return
+			}
+			nc.Close()
+			time.Sleep(2 * time.Second)
+			fi, err = statCacheFile("")
+			if err == nil && fi != nil && fi.Size() > firstFi.Size() {
+				// good
+			} else {
+				if err != nil {
+					t.Fatalf("Expected an extant local cache file, got error: %v", err)
+				}
+				if fi != nil {
+					t.Fatalf("Expected non-zero size local cache file with more bytes, got a FileInfo with size %d", fi.Size())
+				}
+			}
+		})
+	}
+}
+
+func statCacheFile(dir string) (os.FileInfo, error) {
+	if dir == "" {
+		dir = "_rc_"
+	}
+	return os.Stat(filepath.Join(dir, "cache.json"))
+}
