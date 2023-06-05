@@ -20947,8 +20947,8 @@ func TestJetStreamConsumerDefaultsFromStream(t *testing.T) {
 		})
 		switch e := err.(type) {
 		case *nats.APIError:
-			if e.ErrorCode != 10121 {
-				t.Fatalf("invalid error code, got %d, wanted 10121", e.ErrorCode)
+			if ErrorIdentifier(e.ErrorCode) != JSConsumerMaxPendingAckExcessErrF {
+				t.Fatalf("invalid error code, got %d, wanted %d", e.ErrorCode, JSConsumerMaxPendingAckExcessErrF)
 			}
 		default:
 			t.Fatalf("should have returned API error, got %T", e)
@@ -20962,8 +20962,8 @@ func TestJetStreamConsumerDefaultsFromStream(t *testing.T) {
 		})
 		switch e := err.(type) {
 		case *nats.APIError:
-			if e.ErrorCode != 10141 {
-				t.Fatalf("invalid error code, got %d, wanted 10141", e.ErrorCode)
+			if ErrorIdentifier(e.ErrorCode) != JSConsumerInactiveThresholdExcess {
+				t.Fatalf("invalid error code, got %d, wanted %d", e.ErrorCode, JSConsumerInactiveThresholdExcess)
 			}
 		default:
 			t.Fatalf("should have returned API error, got %T", e)
