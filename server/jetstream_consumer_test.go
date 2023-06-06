@@ -449,3 +449,63 @@ func TestJetStreamConsumerMultipleFiltersSequence(t *testing.T) {
 		require_True(t, string(msg.Data) == fmt.Sprintf("%d", i))
 	}
 }
+
+func TestJetStreamConsumerActions(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+	acc := s.GlobalAccount()
+
+	mset, err := acc.addStream(&StreamConfig{
+		Name:      "TEST",
+		Retention: LimitsPolicy,
+		Subjects:  []string{"one", "two", "three", "four", "five.>"},
+		MaxAge:    time.Second * 90,
+	})
+	require_NoError(t, err)
+
+	// Create Consumer. No consumers existed before, so should be fine.
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Durable:        "DUR",
+		FilterSubjects: []string{"one", "two"},
+		AckPolicy:      AckExplicit,
+		DeliverPolicy:  DeliverAll,
+		AckWait:        time.Second * 30,
+		DeliverSubject: nc.NewInbox(),
+	}, "CREATE")
+	require_NoError(t, err)
+	// Create consumer again. Should error if action is CREATE.
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Durable:        "DUR",
+		FilterSubjects: []string{"one", "two"},
+		AckPolicy:      AckExplicit,
+		DeliverPolicy:  DeliverAll,
+		AckWait:        time.Second * 30,
+		DeliverSubject: nc.NewInbox(),
+	}, "CREATE")
+	require_Error(t, err)
+
+	// Update existing consumer. Should be fine, as consumer exists.
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Durable:        "DUR",
+		FilterSubjects: []string{"one"},
+		AckPolicy:      AckExplicit,
+		DeliverPolicy:  DeliverAll,
+		AckWait:        time.Second * 30,
+		DeliverSubject: nc.NewInbox(),
+	}, "UPDATE")
+	require_NoError(t, err)
+
+	// Update consumer. Should error, as this consumer does not exist.
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Durable:        "NEW",
+		FilterSubjects: []string{"one"},
+		AckPolicy:      AckExplicit,
+		DeliverPolicy:  DeliverAll,
+		AckWait:        time.Second * 30,
+		DeliverSubject: nc.NewInbox(),
+	}, "UPDATE")
+	require_NoError(t, err)
+}

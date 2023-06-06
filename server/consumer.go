@@ -116,7 +116,11 @@ type SequenceInfo struct {
 type CreateConsumerRequest struct {
 	Stream string         `json:"stream_name"`
 	Config ConsumerConfig `json:"config"`
+	Action string         `json:"action" `
 }
+
+const ActionCreate = "CREATE"
+const ActionUpdate = "UPDATE"
 
 // ConsumerNakOptions is for optional NAK values, e.g. delay.
 type ConsumerNakOptions struct {
@@ -620,11 +624,15 @@ func checkConsumerCfg(
 	return nil
 }
 
-func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
-	return mset.addConsumerWithAssignment(config, _EMPTY_, nil, false)
+func (mset *stream) addConsumerWithAction(config *ConsumerConfig, action string) (*consumer, error) {
+	return mset.addConsumerWithAssignment(config, _EMPTY_, nil, false, action)
 }
 
-func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment, isRecovering bool) (*consumer, error) {
+func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
+	return mset.addConsumerWithAction(config, "")
+}
+
+func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment, isRecovering bool, action string) (*consumer, error) {
 	mset.mu.RLock()
 	s, jsa, tierName, cfg, acc := mset.srv, mset.jsa, mset.tier, mset.cfg, mset.acc
 	retention := cfg.Retention
@@ -692,12 +700,18 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	if cName != _EMPTY_ {
 		if eo, ok := mset.consumers[cName]; ok {
 			mset.mu.Unlock()
+			if action == ActionCreate {
+				return nil, NewJSConsumerCreateError(errors.New("consumer already exists"))
+			}
 			err := eo.updateConfig(config)
 			if err == nil {
 				return eo, nil
 			}
 			return nil, NewJSConsumerCreateError(err, Unless(err))
 		}
+	}
+	if cName == _EMPTY_ && action == ActionUpdate {
+		NewJSConsumerCreateError(errors.New("consumer does not exist"))
 	}
 
 	// Check for any limits, if the config for the consumer sets a limit we check against that

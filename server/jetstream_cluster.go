@@ -3997,7 +3997,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	var didCreate, isConfigUpdate, needsLocalResponse bool
 	if o == nil {
 		// Add in the consumer if needed.
-		if o, err = mset.addConsumerWithAssignment(ca.Config, ca.Name, ca, false); err == nil {
+		if o, err = mset.addConsumerWithAssignment(ca.Config, ca.Name, ca, false, ""); err == nil {
 			didCreate = true
 		}
 	} else {
@@ -6724,7 +6724,7 @@ func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *stre
 }
 
 // jsClusteredConsumerRequest is first point of entry to create a consumer with R > 1.
-func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, stream string, cfg *ConsumerConfig) {
+func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, stream string, cfg *ConsumerConfig, action string) {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
 		return
@@ -6825,6 +6825,10 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			oname = cfg.Durable
 		}
 		if ca = sa.consumers[oname]; ca != nil && !ca.deleted {
+			if action == ActionCreate {
+				resp.Error = NewJSConsumerCreateError(errors.New("consumer already exists"))
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+			}
 			// Do quick sanity check on new cfg to prevent here if possible.
 			if err := acc.checkNewConsumerConfig(ca.Config, cfg); err != nil {
 				resp.Error = NewJSConsumerCreateError(err, Unless(err))
@@ -6836,6 +6840,10 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 
 	// If this is new consumer.
 	if ca == nil {
+		if action == ActionUpdate {
+			resp.Error = NewJSConsumerCreateError(errors.New("consumer does not exist"))
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		}
 		rg := cc.createGroupForConsumer(cfg, sa)
 		if rg == nil {
 			resp.Error = NewJSInsufficientResourcesError()

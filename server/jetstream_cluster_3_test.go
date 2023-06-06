@@ -4536,3 +4536,75 @@ func TestJetStreamClusterConsumerCleanupWithSameName(t *testing.T) {
 	// Make sure no other errors showed up
 	require_True(t, len(errCh) == 0)
 }
+func TestJetStreamClusterConsumerActions(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3F", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	var err error
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"test"},
+	})
+	require_NoError(t, err)
+
+	ecSubj := fmt.Sprintf(JSApiConsumerCreateExT, "TEST", "CONSUMER", "test")
+	crReq := CreateConsumerRequest{
+		Stream: "TEST",
+		Config: ConsumerConfig{
+			DeliverPolicy: DeliverLast,
+			FilterSubject: "test",
+			AckPolicy:     AckExplicit,
+		},
+	}
+
+	// A new consumer. Should not be an error.
+	crReq.Action = ActionCreate
+	req, err := json.Marshal(crReq)
+	require_NoError(t, err)
+
+	resp, err := nc.Request(ecSubj, req, 500*time.Millisecond)
+	require_NoError(t, err)
+	var ccResp JSApiConsumerCreateResponse
+	err = json.Unmarshal(resp.Data, &ccResp)
+	require_NoError(t, err)
+	if ccResp.Error != nil {
+		t.Fatalf("Unexpected error: %v", ccResp.Error)
+	}
+
+	// Consumer exists, so should error.
+	resp, err = nc.Request(ecSubj, req, 500*time.Millisecond)
+	require_NoError(t, err)
+	err = json.Unmarshal(resp.Data, &ccResp)
+	require_NoError(t, err)
+	if ccResp.Error == nil {
+		t.Fatalf("Unexpected ok response: %v", ccResp.Error)
+	}
+
+	// Consumer update, so update should be ok
+	crReq.Action = ActionUpdate
+	req, err = json.Marshal(crReq)
+	require_NoError(t, err)
+	resp, err = nc.Request(ecSubj, req, 500*time.Millisecond)
+	require_NoError(t, err)
+	err = json.Unmarshal(resp.Data, &ccResp)
+	require_NoError(t, err)
+	if ccResp.Error == nil {
+		t.Fatalf("Unexpected ok response: %v", ccResp.Error)
+	}
+
+	// Updating new consumer, so should error
+	crReq.Config.Name = "NEW"
+	req, err = json.Marshal(crReq)
+	require_NoError(t, err)
+	resp, err = nc.Request(ecSubj, req, 500*time.Millisecond)
+	require_NoError(t, err)
+	err = json.Unmarshal(resp.Data, &ccResp)
+	require_NoError(t, err)
+	if ccResp.Error == nil {
+		t.Fatalf("Unexpected ok response: %v", ccResp.Error)
+	}
+
+}
