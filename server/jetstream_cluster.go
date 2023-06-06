@@ -6825,8 +6825,8 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			oname = cfg.Durable
 		}
 		if ca = sa.consumers[oname]; ca != nil && !ca.deleted {
-			if action == ActionCreate && !reflect.DeepEqual(*cfg, ca.Config) {
-				resp.Error = NewJSConsumerCreateError(errors.New("consumer already exists"))
+			if action == ActionCreate && !reflect.DeepEqual(cfg, ca.Config) {
+				resp.Error = NewJSConsumerAlreadyExistsError()
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 			}
 			// Do quick sanity check on new cfg to prevent here if possible.
@@ -6841,7 +6841,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	// If this is new consumer.
 	if ca == nil {
 		if action == ActionUpdate {
-			resp.Error = NewJSConsumerCreateError(errors.New("consumer does not exist"))
+			resp.Error = NewJSConsumerDoesntExistError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		}
 		rg := cc.createGroupForConsumer(cfg, sa)

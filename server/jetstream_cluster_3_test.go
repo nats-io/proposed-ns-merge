@@ -4564,7 +4564,6 @@ func TestJetStreamClusterConsumerActions(t *testing.T) {
 	crReq.Action = ActionCreate
 	req, err := json.Marshal(crReq)
 	require_NoError(t, err)
-
 	resp, err := nc.Request(ecSubj, req, 500*time.Millisecond)
 	require_NoError(t, err)
 	var ccResp JSApiConsumerCreateResponse
@@ -4573,17 +4572,20 @@ func TestJetStreamClusterConsumerActions(t *testing.T) {
 	if ccResp.Error != nil {
 		t.Fatalf("Unexpected error: %v", ccResp.Error)
 	}
+	ccResp.Error = nil
 
 	// Consumer exists, but config is the same, so should be ok
 	resp, err = nc.Request(ecSubj, req, 500*time.Millisecond)
 	require_NoError(t, err)
 	err = json.Unmarshal(resp.Data, &ccResp)
 	require_NoError(t, err)
-	if ccResp.Error == nil {
-		t.Fatalf("Unexpected ok response: %v", ccResp.Error)
+	if ccResp.Error != nil {
+		t.Fatalf("Unexpected er response: %v", ccResp.Error)
 	}
+	ccResp.Error = nil
+	// Consumer exists, but config is the same, so should be ok
 	// Consumer exists. Config is different, so should error
-	crReq.Config.FilterSubject = ""
+	crReq.Config.Description = "changed"
 	req, err = json.Marshal(crReq)
 	resp, err = nc.Request(ecSubj, req, 500*time.Millisecond)
 	require_NoError(t, err)
@@ -4593,19 +4595,22 @@ func TestJetStreamClusterConsumerActions(t *testing.T) {
 		t.Fatalf("Unexpected ok response: %v", ccResp.Error)
 	}
 
+	ccResp.Error = nil
 	// Consumer update, so update should be ok
 	crReq.Action = ActionUpdate
-	crReq.Config.FilterSubject = ""
+	crReq.Config.Description = "changed again"
 	req, err = json.Marshal(crReq)
 	require_NoError(t, err)
 	resp, err = nc.Request(ecSubj, req, 500*time.Millisecond)
 	require_NoError(t, err)
+	fmt.Printf("CC RESP: %+v\n", string(resp.Data))
 	err = json.Unmarshal(resp.Data, &ccResp)
 	require_NoError(t, err)
-	if ccResp.Error == nil {
-		t.Fatalf("Unexpected ok response: %v", ccResp.Error)
+	if ccResp.Error != nil {
+		t.Fatalf("Unexpected error response: %v", ccResp.Error)
 	}
 
+	ccResp.Error = nil
 	// Updating new consumer, so should error
 	crReq.Config.Name = "NEW"
 	req, err = json.Marshal(crReq)
@@ -4614,8 +4619,8 @@ func TestJetStreamClusterConsumerActions(t *testing.T) {
 	require_NoError(t, err)
 	err = json.Unmarshal(resp.Data, &ccResp)
 	require_NoError(t, err)
-	if ccResp.Error == nil {
-		t.Fatalf("Unexpected ok response: %v", ccResp.Error)
+	if ccResp.Error != nil {
+		t.Fatalf("Unexpected err response: %v", ccResp.Error)
 	}
 
 }

@@ -701,7 +701,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		if eo, ok := mset.consumers[cName]; ok {
 			mset.mu.Unlock()
 			if action == ActionCreate && !reflect.DeepEqual(*config, eo.config()) {
-				return nil, NewJSConsumerCreateError(errors.New("consumer already exists"))
+				return nil, NewJSConsumerAlreadyExistsError()
 			}
 			err := eo.updateConfig(config)
 			if err == nil {
@@ -711,7 +711,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		}
 	}
 	if cName == _EMPTY_ && action == ActionUpdate {
-		NewJSConsumerCreateError(errors.New("consumer does not exist"))
+		NewJSConsumerDoesntExistError()
 	}
 
 	// Check for any limits, if the config for the consumer sets a limit we check against that
