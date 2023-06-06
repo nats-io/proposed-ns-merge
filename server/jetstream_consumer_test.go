@@ -473,17 +473,24 @@ func TestJetStreamConsumerActions(t *testing.T) {
 		AckPolicy:      AckExplicit,
 		DeliverPolicy:  DeliverAll,
 		AckWait:        time.Second * 30,
-		DeliverSubject: nc.NewInbox(),
 	}, "CREATE")
 	require_NoError(t, err)
-	// Create consumer again. Should error if action is CREATE.
+	// Create consumer again. Should be ok if action is CREATE but config is exactly the same.
 	_, err = mset.addConsumerWithAction(&ConsumerConfig{
 		Durable:        "DUR",
 		FilterSubjects: []string{"one", "two"},
 		AckPolicy:      AckExplicit,
 		DeliverPolicy:  DeliverAll,
 		AckWait:        time.Second * 30,
-		DeliverSubject: nc.NewInbox(),
+	}, "CREATE")
+	require_NoError(t, err)
+	// Create consumer again. Should error if action is CREATE.
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Durable:        "DUR",
+		FilterSubjects: []string{"one"},
+		AckPolicy:      AckExplicit,
+		DeliverPolicy:  DeliverAll,
+		AckWait:        time.Second * 30,
 	}, "CREATE")
 	require_Error(t, err)
 
@@ -494,7 +501,6 @@ func TestJetStreamConsumerActions(t *testing.T) {
 		AckPolicy:      AckExplicit,
 		DeliverPolicy:  DeliverAll,
 		AckWait:        time.Second * 30,
-		DeliverSubject: nc.NewInbox(),
 	}, "UPDATE")
 	require_NoError(t, err)
 
@@ -505,7 +511,6 @@ func TestJetStreamConsumerActions(t *testing.T) {
 		AckPolicy:      AckExplicit,
 		DeliverPolicy:  DeliverAll,
 		AckWait:        time.Second * 30,
-		DeliverSubject: nc.NewInbox(),
 	}, "UPDATE")
 	require_NoError(t, err)
 }

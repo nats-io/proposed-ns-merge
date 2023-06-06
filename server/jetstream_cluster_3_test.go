@@ -4574,7 +4574,17 @@ func TestJetStreamClusterConsumerActions(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", ccResp.Error)
 	}
 
-	// Consumer exists, so should error.
+	// Consumer exists, but config is the same, so should be ok
+	resp, err = nc.Request(ecSubj, req, 500*time.Millisecond)
+	require_NoError(t, err)
+	err = json.Unmarshal(resp.Data, &ccResp)
+	require_NoError(t, err)
+	if ccResp.Error == nil {
+		t.Fatalf("Unexpected ok response: %v", ccResp.Error)
+	}
+	// Consumer exists. Config is different, so should error
+	crReq.Config.FilterSubject = ""
+	req, err = json.Marshal(crReq)
 	resp, err = nc.Request(ecSubj, req, 500*time.Millisecond)
 	require_NoError(t, err)
 	err = json.Unmarshal(resp.Data, &ccResp)
@@ -4585,6 +4595,7 @@ func TestJetStreamClusterConsumerActions(t *testing.T) {
 
 	// Consumer update, so update should be ok
 	crReq.Action = ActionUpdate
+	crReq.Config.FilterSubject = ""
 	req, err = json.Marshal(crReq)
 	require_NoError(t, err)
 	resp, err = nc.Request(ecSubj, req, 500*time.Millisecond)
