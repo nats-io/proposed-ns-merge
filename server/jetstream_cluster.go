@@ -6841,7 +6841,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	// If this is new consumer.
 	if ca == nil {
 		if strings.ToUpper(action) == ActionUpdate {
-			resp.Error = NewJSConsumerDoesntExistError()
+			resp.Error = NewJSConsumerDoesNotExistError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		}
 		rg := cc.createGroupForConsumer(cfg, sa)

@@ -711,7 +711,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		}
 	}
 	if cName == _EMPTY_ && strings.ToUpper(action) == ActionUpdate {
-		NewJSConsumerDoesntExistError()
+		NewJSConsumerDoesNotExistError()
 	}
 
 	// Check for any limits, if the config for the consumer sets a limit we check against that

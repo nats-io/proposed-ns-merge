@@ -1420,7 +1420,7 @@
     "deprecates": ""
   },
   {
-    "constant": "JSConsumerDoesntExist",
+    "constant": "JSConsumerDoesNotExist",
     "code": 400,
     "error_code": 10144,
     "description": "consumer does not exist",
