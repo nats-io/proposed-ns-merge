@@ -4587,6 +4587,7 @@ func TestJetStreamClusterConsumerActions(t *testing.T) {
 	// Consumer exists. Config is different, so should error
 	crReq.Config.Description = "changed"
 	req, err = json.Marshal(crReq)
+	require_NoError(t, err)
 	resp, err = nc.Request(ecSubj, req, 500*time.Millisecond)
 	require_NoError(t, err)
 	err = json.Unmarshal(resp.Data, &ccResp)
@@ -4603,7 +4604,6 @@ func TestJetStreamClusterConsumerActions(t *testing.T) {
 	require_NoError(t, err)
 	resp, err = nc.Request(ecSubj, req, 500*time.Millisecond)
 	require_NoError(t, err)
-	fmt.Printf("CC RESP: %+v\n", string(resp.Data))
 	err = json.Unmarshal(resp.Data, &ccResp)
 	require_NoError(t, err)
 	if ccResp.Error != nil {

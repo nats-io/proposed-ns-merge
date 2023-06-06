@@ -6825,7 +6825,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			oname = cfg.Durable
 		}
 		if ca = sa.consumers[oname]; ca != nil && !ca.deleted {
-			if action == ActionCreate && !reflect.DeepEqual(cfg, ca.Config) {
+			if strings.ToUpper(action) == ActionCreate && !reflect.DeepEqual(cfg, ca.Config) {
 				resp.Error = NewJSConsumerAlreadyExistsError()
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 			}
@@ -6840,7 +6840,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 
 	// If this is new consumer.
 	if ca == nil {
-		if action == ActionUpdate {
+		if strings.ToUpper(action) == ActionUpdate {
 			resp.Error = NewJSConsumerDoesntExistError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		}

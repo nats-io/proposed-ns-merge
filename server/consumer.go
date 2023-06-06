@@ -700,7 +700,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	if cName != _EMPTY_ {
 		if eo, ok := mset.consumers[cName]; ok {
 			mset.mu.Unlock()
-			if action == ActionCreate && !reflect.DeepEqual(*config, eo.config()) {
+			if strings.ToUpper(action) == ActionCreate && !reflect.DeepEqual(*config, eo.config()) {
 				return nil, NewJSConsumerAlreadyExistsError()
 			}
 			err := eo.updateConfig(config)
@@ -710,7 +710,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			return nil, NewJSConsumerCreateError(err, Unless(err))
 		}
 	}
-	if cName == _EMPTY_ && action == ActionUpdate {
+	if cName == _EMPTY_ && strings.ToUpper(action) == ActionUpdate {
 		NewJSConsumerDoesntExistError()
 	}
 
