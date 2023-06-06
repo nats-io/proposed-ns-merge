@@ -701,7 +701,7 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 			return 0, ErrStoreMsgNotFound
 		}
 		ms.state.FirstSeq = seq
-		ms.state.FirstTime = time.Unix(0, sm.ts).UTC()
+		ms.state.FirstTime = time.Unix(0, sm.ts)
 
 		for seq := seq - 1; seq > 0; seq-- {
 			if sm := ms.msgs[seq]; sm != nil {
@@ -757,7 +757,7 @@ func (ms *memStore) reset() error {
 	ms.state.FirstSeq = 0
 	ms.state.FirstTime = time.Time{}
 	ms.state.LastSeq = 0
-	ms.state.LastTime = time.Now().UTC()
+	ms.state.LastTime = time.Now()
 	// Update msgs and bytes.
 	ms.state.Msgs = 0
 	ms.state.Bytes = 0
@@ -800,7 +800,7 @@ func (ms *memStore) Truncate(seq uint64) error {
 	}
 	// Reset last.
 	ms.state.LastSeq = lsm.seq
-	ms.state.LastTime = time.Unix(0, lsm.ts).UTC()
+	ms.state.LastTime = time.Unix(0, lsm.ts)
 	// Update msgs and bytes.
 	if purged > ms.state.Msgs {
 		purged = ms.state.Msgs
@@ -984,7 +984,7 @@ func (ms *memStore) updateFirstSeq(seq uint64) {
 	}
 	if nsm != nil {
 		ms.state.FirstSeq = nsm.seq
-		ms.state.FirstTime = time.Unix(0, nsm.ts).UTC()
+		ms.state.FirstTime = time.Unix(0, nsm.ts)
 	} else {
 		// Like purge.
 		ms.state.FirstSeq = ms.state.LastSeq + 1

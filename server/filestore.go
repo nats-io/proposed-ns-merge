@@ -846,10 +846,10 @@ func (fs *fileStore) rebuildStateLocked(ld *LostStreamData) {
 		fs.state.Bytes += mb.bytes
 		if fs.state.FirstSeq == 0 || mb.first.seq < fs.state.FirstSeq {
 			fs.state.FirstSeq = mb.first.seq
-			fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
+			fs.state.FirstTime = time.Unix(0, mb.first.ts)
 		}
 		fs.state.LastSeq = mb.last.seq
-		fs.state.LastTime = time.Unix(0, mb.last.ts).UTC()
+		fs.state.LastTime = time.Unix(0, mb.last.ts)
 		mb.mu.RUnlock()
 	}
 }
@@ -1198,11 +1198,11 @@ func (fs *fileStore) recoverMsgs() error {
 				}
 				if fs.state.FirstSeq == 0 || mb.first.seq < fs.state.FirstSeq {
 					fs.state.FirstSeq = mb.first.seq
-					fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
+					fs.state.FirstTime = time.Unix(0, mb.first.ts)
 				}
 				if mb.last.seq > fs.state.LastSeq {
 					fs.state.LastSeq = mb.last.seq
-					fs.state.LastTime = time.Unix(0, mb.last.ts).UTC()
+					fs.state.LastTime = time.Unix(0, mb.last.ts)
 				}
 				fs.state.Msgs += mb.msgs
 				fs.state.Bytes += mb.bytes
@@ -2827,7 +2827,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 			// Can update this one in place.
 			if seq == fs.state.FirstSeq {
 				fs.state.FirstSeq = mb.first.seq // new one.
-				fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
+				fs.state.FirstTime = time.Unix(0, mb.first.ts)
 			}
 		}
 	} else if !isEmpty {
@@ -3371,7 +3371,7 @@ func (fs *fileStore) selectNextFirst() {
 		mb := fs.blks[0]
 		mb.mu.RLock()
 		fs.state.FirstSeq = mb.first.seq
-		fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
+		fs.state.FirstTime = time.Unix(0, mb.first.ts)
 		mb.mu.RUnlock()
 	} else {
 		// Could not find anything, so treat like purge
@@ -5203,7 +5203,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 						firstSeqNeedsUpdate = firstSeqNeedsUpdate || seq == fs.state.FirstSeq
 					} else if seq == fs.state.FirstSeq {
 						fs.state.FirstSeq = mb.first.seq // new one.
-						fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
+						fs.state.FirstTime = time.Unix(0, mb.first.ts)
 					}
 				} else {
 					// Out of order delete.
@@ -5419,7 +5419,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 		smb.first.seq = seq - 1 // Just for start condition for selectNextFirst.
 		smb.selectNextFirst()
 		fs.state.FirstSeq = smb.first.seq
-		fs.state.FirstTime = time.Unix(0, smb.first.ts).UTC()
+		fs.state.FirstTime = time.Unix(0, smb.first.ts)
 
 		// Check if we should reclaim the head space from this block.
 		// This will be optimistic only, so don't continue if we encounter any errors here.
@@ -5528,7 +5528,7 @@ func (fs *fileStore) reset() error {
 	fs.state.FirstSeq = 0
 	fs.state.FirstTime = time.Time{}
 	fs.state.LastSeq = 0
-	fs.state.LastTime = time.Now().UTC()
+	fs.state.LastTime = time.Now()
 	// Update msgs and bytes.
 	fs.state.Msgs = 0
 	fs.state.Bytes = 0
@@ -5608,7 +5608,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 
 	// Reset last.
 	fs.state.LastSeq = lsm.seq
-	fs.state.LastTime = time.Unix(0, lsm.ts).UTC()
+	fs.state.LastTime = time.Unix(0, lsm.ts)
 	// Update msgs and bytes.
 	if purged > fs.state.Msgs {
 		purged = fs.state.Msgs
