@@ -128,7 +128,7 @@ func parseOCSPPeer(v interface{}) (pcfg *certidp.OCSPPeerConfig, retError error)
 }
 
 func peerFromVerifiedChains(chains [][]*x509.Certificate) *x509.Certificate {
-	if chains == nil || len(chains) == 0 || len(chains[0]) == 0 {
+	if len(chains) == 0 || len(chains[0]) == 0 {
 		return nil
 	}
 	return chains[0][0]
@@ -305,7 +305,7 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 	var cachedRevocation bool
 	// Check our cache before calling out to the CA OCSP responder
 	s.Debugf(certidp.DbgCheckingCacheForCert, subj, fingerprint)
-	if rawResp = rc.Get(fingerprint, sLogs); rawResp != nil && len(rawResp) > 0 {
+	if rawResp = rc.Get(fingerprint, sLogs); len(rawResp) > 0 {
 		// Signature validation of CA's OCSP response occurs in ParseResponse
 		ocspr, err = ocsp.ParseResponse(rawResp, link.Issuer)
 		if err == nil && ocspr != nil {

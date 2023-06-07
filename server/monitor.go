@@ -1255,8 +1255,8 @@ type LeafNodeOptsVarz struct {
 	TLSTimeout        float64              `json:"tls_timeout,omitempty"`
 	TLSRequired       bool                 `json:"tls_required,omitempty"`
 	TLSVerify         bool                 `json:"tls_verify,omitempty"`
-	TLSOCSPPeerVerify bool                 `json:"tls_ocsp_peer_verify,omitempty"`
 	Remotes           []RemoteLeafOptsVarz `json:"remotes,omitempty"`
+	TLSOCSPPeerVerify bool                 `json:"tls_ocsp_peer_verify,omitempty"`
 }
 
 // DenyRules Contains lists of subjects not allowed to be imported/exported

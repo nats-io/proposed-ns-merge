@@ -105,27 +105,21 @@ type NoOpCache struct {
 	online bool
 }
 
-func (c *NoOpCache) Put(_ string, _ *ocsp.Response, _ string, _ *certidp.Log) {
-	return
-}
+func (c *NoOpCache) Put(_ string, _ *ocsp.Response, _ string, _ *certidp.Log) {}
 
 func (c *NoOpCache) Get(_ string, _ *certidp.Log) []byte {
 	return nil
 }
 
-func (c *NoOpCache) Delete(_ string, _ bool, _ *certidp.Log) {
-	return
-}
+func (c *NoOpCache) Delete(_ string, _ bool, _ *certidp.Log) {}
 
 func (c *NoOpCache) Start(_ *Server) {
 	c.stats = &OCSPResponseCacheStats{}
 	c.online = true
-	return
 }
 
 func (c *NoOpCache) Stop(_ *Server) {
 	c.online = false
-	return
 }
 
 func (c *NoOpCache) Online() bool {
@@ -264,7 +258,6 @@ func (c *LocalCache) Start(s *Server) {
 	c.loadCache(s)
 	c.initStats()
 	c.online = true
-	return
 }
 
 func (c *LocalCache) Stop(s *Server) {
@@ -325,8 +318,7 @@ func (c *LocalCache) initStats() {
 func (c *LocalCache) Compress(buf []byte) ([]byte, error) {
 	bodyLen := int64(len(buf))
 	var output bytes.Buffer
-	var writer io.WriteCloser
-	writer = s2.NewWriter(&output)
+	writer := s2.NewWriter(&output)
 	input := bytes.NewReader(buf[:bodyLen])
 	if n, err := io.CopyN(writer, input, bodyLen); err != nil {
 		return nil, fmt.Errorf(certidp.ErrCannotWriteCompressed, err)
@@ -342,8 +334,7 @@ func (c *LocalCache) Compress(buf []byte) ([]byte, error) {
 func (c *LocalCache) Decompress(buf []byte) ([]byte, error) {
 	bodyLen := int64(len(buf))
 	input := bytes.NewReader(buf[:bodyLen])
-	var reader io.ReadCloser
-	reader = io.NopCloser(s2.NewReader(input))
+	reader := io.NopCloser(s2.NewReader(input))
 	output, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, fmt.Errorf(certidp.ErrCannotReadCompressed, err)

@@ -295,8 +295,5 @@ func ValidDelegationCheck(iss *x509.Certificate, ocspr *ocsp.Response) bool {
 			break
 		}
 	}
-	if !delegatedSigner {
-		return false
-	}
-	return true
+	return delegatedSigner
 }
