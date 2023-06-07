@@ -1081,7 +1081,7 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 			nc.Close()
 
 			v := monitorGetVarzHelper(t, 8222)
-			if v.OCSPResponseCache.Misses != 2 && v.OCSPResponseCache.Responses != 2 {
+			if v.OCSPResponseCache.Misses != 2 || v.OCSPResponseCache.Responses != 2 {
 				t.Errorf("Expected cache misses and cache items to be 2, got %d and %d", v.OCSPResponseCache.Misses, v.OCSPResponseCache.Responses)
 			}
 
@@ -1111,7 +1111,7 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 			}
 
 			v = monitorGetVarzHelper(t, 8222)
-			if v.OCSPResponseCache.Misses != 2 && v.OCSPResponseCache.Hits != 2 && v.OCSPResponseCache.Responses != 2 {
+			if v.OCSPResponseCache.Misses != 2 || v.OCSPResponseCache.Hits != 2 || v.OCSPResponseCache.Responses != 2 {
 				t.Errorf("Expected cache misses, hits and cache items to be 2, got %d and %d and %d", v.OCSPResponseCache.Misses, v.OCSPResponseCache.Hits, v.OCSPResponseCache.Responses)
 			}
 		})
@@ -2728,6 +2728,145 @@ func TestOCSPPeerBadDelegatedCAResponseSigner(t *testing.T) {
 				return
 			}
 			defer nc.Close()
+		})
+	}
+}
+
+// TestOCSPPeerNextUpdateUnset is test of scenario when responder does not set NextUpdate and cache TTL option is used
+func TestOCSPPeerNextUpdateUnset(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
+	defer rootCAResponder.Shutdown(ctx)
+	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+
+	respCertPEM := "configs/certs/ocsp_peer/mini-ca/ocsp1/ocsp1_bundle.pem"
+	respKeyPEM := "configs/certs/ocsp_peer/mini-ca/ocsp1/private/ocsp1_keypair.pem"
+	issuerCertPEM := "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem"
+	intermediateCA1Responder := newOCSPResponderBase(t, issuerCertPEM, respCertPEM, respKeyPEM, true, "127.0.0.1:18888", 0)
+	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
+	defer intermediateCA1Responder.Shutdown(ctx)
+	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
+
+	for _, test := range []struct {
+		name           string
+		config         string
+		opts           []nats.Option
+		err            error
+		rerr           error
+		expectedMisses int64
+		configure      func()
+	}{
+		{
+			"TTL set to 4 seconds with second client connection leveraging cache from first client connect",
+			`
+				port: -1
+				http_port: 8222
+				tls: {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+					verify: true
+					# Long form configuration
+					ocsp_peer: {
+						verify: true
+						ca_timeout: 5
+						allowed_clockskew: 0
+						cache_ttl_when_next_update_unset: 4
+					}
+				}
+				# Short form configuration, local as default
+				ocsp_cache: true
+			`,
+			[]nats.Option{
+				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
+				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
+			2,
+			func() {},
+		},
+		{
+			"TTL set to 1 seconds with second client connection not leveraging cache items from first client connect",
+			`
+				port: -1
+				http_port: 8222
+				tls: {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+					verify: true
+					# Long form configuration
+					ocsp_peer: {
+						verify: true
+						ca_timeout: 5
+						allowed_clockskew: 0
+						cache_ttl_when_next_update_unset: 1
+					}
+				}
+				# Short form configuration, local as default
+				ocsp_cache: true
+			`,
+			[]nats.Option{
+				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
+				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
+			3,
+			func() {},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// Cleanup any previous test that saved a local cache
+			deleteLocalStore(t, "")
+			test.configure()
+			content := test.config
+			conf := createConfFile(t, []byte(content))
+			s, opts := RunServerWithConfig(conf)
+			defer s.Shutdown()
+			nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port), test.opts...)
+			if test.err == nil && err != nil {
+				t.Errorf("Expected to connect, got %v", err)
+			} else if test.err != nil && err == nil {
+				t.Errorf("Expected error on connect")
+			} else if test.err != nil && err != nil {
+				// Error on connect was expected
+				if test.err.Error() != err.Error() {
+					t.Errorf("Expected error %s, got: %s", test.err, err)
+				}
+				return
+			}
+			nc.Close()
+
+			// Wait interval shorter than first test, and longer than second test
+			time.Sleep(2 * time.Second)
+
+			nc, err = nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port), test.opts...)
+			if test.err == nil && err != nil {
+				t.Errorf("Expected to connect, got %v", err)
+			} else if test.err != nil && err == nil {
+				t.Errorf("Expected error on connect")
+			} else if test.err != nil && err != nil {
+				// Error on connect was expected
+				if test.err.Error() != err.Error() {
+					t.Errorf("Expected error %s, got: %s", test.err, err)
+				}
+				return
+			}
+			defer nc.Close()
+
+			v := monitorGetVarzHelper(t, 8222)
+			if v.OCSPResponseCache.Misses != test.expectedMisses || v.OCSPResponseCache.Responses != 2 {
+				t.Errorf("Expected cache misses to be %d and cache items to be 2, got %d and %d", test.expectedMisses, v.OCSPResponseCache.Misses, v.OCSPResponseCache.Responses)
+			}
 		})
 	}
 }

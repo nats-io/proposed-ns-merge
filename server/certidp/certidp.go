@@ -224,7 +224,7 @@ func GetLeafIssuerCert(chain *[]*x509.Certificate, leafPos int) *x509.Certificat
 // OCSPResponseCurrent checks if the OCSP response is current (i.e. not expired and not future effective)
 func OCSPResponseCurrent(ocspr *ocsp.Response, opts *OCSPPeerConfig, log *Log) bool {
 	skew := time.Duration(opts.ClockSkew * float64(time.Second))
-	if skew <= 0*time.Second {
+	if skew < 0*time.Second {
 		skew = DefaultAllowedClockSkew
 	}
 	now := time.Now().UTC()
@@ -240,9 +240,6 @@ func OCSPResponseCurrent(ocspr *ocsp.Response, opts *OCSPPeerConfig, log *Log) b
 		ttl := time.Duration(opts.TTLUnsetNextUpdate * float64(time.Second))
 		if ttl < 0*time.Second {
 			ttl = DefaultTTLUnsetNextUpdate
-		}
-		if opts.TTLUnsetNextUpdate < 0 {
-
 		}
 		expiryTime := ocspr.ThisUpdate.Add(ttl)
 		if expiryTime.Before(now.Add(-1 * skew)) {
