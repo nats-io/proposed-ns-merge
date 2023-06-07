@@ -1435,17 +1435,14 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		var err error
 		switch vv := v.(type) {
 		case bool:
+			pc := NewOCSPResponseCacheConfig()
 			if vv {
-				// Set enabled with memory cache default
-				pc := &OCSPResponseCacheConfig{
-					Type: LOCAL,
-				}
+				// Set enabled
+				pc.Type = LOCAL
 				o.OCSPCacheConfig = pc
 			} else {
-				// Set enabled with noop cache
-				pc := &OCSPResponseCacheConfig{
-					Type: NONE,
-				}
+				// Set disabled (none cache)
+				pc.Type = NONE
 				o.OCSPCacheConfig = pc
 			}
 		case map[string]interface{}:

@@ -60,6 +60,15 @@ type OCSPResponseCacheConfig struct {
 	SaveInterval    float64
 }
 
+func NewOCSPResponseCacheConfig() *OCSPResponseCacheConfig {
+	return &OCSPResponseCacheConfig{
+		Type:            LOCAL,
+		LocalStore:      OCSPResponseCacheDefaultDir,
+		PreserveRevoked: false,
+		SaveInterval:    OCSPResponseCacheDefaultSaveInterval.Seconds(),
+	}
+}
+
 type OCSPResponseCacheStats struct {
 	Responses int64 `json:"size"`
 	Hits      int64 `json:"hits"`
@@ -486,9 +495,7 @@ func (s *Server) initOCSPResponseCache() {
 	}
 	so := s.getOpts()
 	if so.OCSPCacheConfig == nil {
-		so.OCSPCacheConfig = &OCSPResponseCacheConfig{
-			Type: LOCAL,
-		}
+		so.OCSPCacheConfig = NewOCSPResponseCacheConfig()
 	}
 	var cc = so.OCSPCacheConfig
 	switch cc.Type {
@@ -502,15 +509,7 @@ func (s *Server) initOCSPResponseCache() {
 			mux:    &sync.RWMutex{},
 			dirty:  false,
 		}
-		ccsi := time.Duration(cc.SaveInterval) * time.Second
-		switch {
-		case ccsi == 0:
-			c.saveInterval = OCSPResponseCacheDefaultSaveInterval
-		case ccsi < OCSPResponseCacheMinimumSaveInterval:
-			c.saveInterval = OCSPResponseCacheMinimumSaveInterval
-		default:
-			c.saveInterval = ccsi
-		}
+		c.saveInterval = time.Duration(cc.SaveInterval) * time.Second
 		c.timer = time.AfterFunc(c.saveInterval, func() {
 			s.Debugf(certidp.DbgCacheSaveTimerExpired)
 			c.saveCache(s)
@@ -552,9 +551,7 @@ func parseOCSPResponseCache(v interface{}) (pcfg *OCSPResponseCacheConfig, retEr
 	if !ok {
 		return nil, &configErr{tk, fmt.Sprintf(certidp.ErrIllegalCacheOptsConfig, v)}
 	}
-	pcfg = &OCSPResponseCacheConfig{
-		Type: LOCAL,
-	}
+	pcfg = NewOCSPResponseCacheConfig()
 	retError = nil
 	for mk, mv := range cm {
 		// Again, unwrap token value if line check is required.
@@ -598,7 +595,11 @@ func parseOCSPResponseCache(v interface{}) (pcfg *OCSPResponseCacheConfig, retEr
 			default:
 				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingCacheOptFieldTypeConversion, "unexpected type")}
 			}
-			pcfg.SaveInterval = at
+			si := time.Duration(at) * time.Second
+			if si < OCSPResponseCacheMinimumSaveInterval {
+				si = OCSPResponseCacheMinimumSaveInterval
+			}
+			pcfg.SaveInterval = si.Seconds()
 		default:
 			return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingCacheOptFieldGeneric, mk)}
 		}
