@@ -29,6 +29,7 @@ import (
 const (
 	DefaultAllowedClockSkew     = 30 * time.Second
 	DefaultOCSPResponderTimeout = 2 * time.Second
+	DefaultTTLUnsetNextUpdate   = 1 * time.Hour
 )
 
 type StatusAssertion int
@@ -90,6 +91,7 @@ type OCSPPeerConfig struct {
 	WarnOnly               bool
 	UnknownIsGood          bool
 	AllowWhenCAUnreachable bool
+	TTLUnsetNextUpdate     float64
 }
 
 // Log is a neutral method of passign server loggers to plugins
@@ -136,8 +138,11 @@ For client, leaf spoke (remotes), and leaf hub connections, you may enable OCSP 
            # Treat response Unknown status as valid certificate (default false)
            unknown_is_good: false
 
-           # Warn-only if no effective CA response can be obtained and no cached revocation exists (default false)
+           # Warn-only if no CA response can be obtained and no cached revocation exists (default false)
            allow_when_ca_unreachable: false
+
+           # If response NextUpdate unset by CA, set a default cache TTL in seconds from ThisUpdate (default 1 hour)
+           cache_ttl_when_next_update_unset: 3600
         }
         ...
     }
@@ -222,19 +227,66 @@ func OCSPResponseCurrent(ocspr *ocsp.Response, opts *OCSPPeerConfig, log *Log) b
 	if skew <= 0*time.Second {
 		skew = DefaultAllowedClockSkew
 	}
-	// Time validation not handled by ParseResponse.
-	// https://tools.ietf.org/html/rfc6960#section-4.2.2.1
 	now := time.Now().UTC()
+	// Typical effectivity check based on CA response ThisUpdate and NextUpdate semantics
 	if !ocspr.NextUpdate.IsZero() && ocspr.NextUpdate.Before(now.Add(-1*skew)) {
 		t := ocspr.NextUpdate.Format(time.RFC3339Nano)
 		nt := now.Format(time.RFC3339Nano)
 		log.Debugf(DbgResponseExpired, t, nt, skew)
 		return false
 	}
+	// CA responder can assert NextUpdate unset, in which case use config option to set a default cache TTL
+	if ocspr.NextUpdate.IsZero() {
+		ttl := time.Duration(opts.TTLUnsetNextUpdate * float64(time.Second))
+		if ttl < 0*time.Second {
+			ttl = DefaultTTLUnsetNextUpdate
+		}
+		if opts.TTLUnsetNextUpdate < 0 {
+
+		}
+		expiryTime := ocspr.ThisUpdate.Add(ttl)
+		if expiryTime.Before(now.Add(-1 * skew)) {
+			t := expiryTime.Format(time.RFC3339Nano)
+			nt := now.Format(time.RFC3339Nano)
+			log.Debugf(DbgResponseTTLExpired, t, nt, skew)
+			return false
+		}
+	}
 	if ocspr.ThisUpdate.After(now.Add(skew)) {
 		t := ocspr.ThisUpdate.Format(time.RFC3339Nano)
 		nt := now.Format(time.RFC3339Nano)
 		log.Debugf(DbgResponseFutureDated, t, nt, skew)
+		return false
+	}
+	return true
+}
+
+// ValidDelegationCheck checks if the CA OCSP Response was signed by a valid CA Issuer delegate as per (RFC 6960, section 4.2.2.2)
+// If a valid delegate or direct-signed by CA Issuer, true returned.
+func ValidDelegationCheck(iss *x509.Certificate, ocspr *ocsp.Response) bool {
+	// This call assumes prior successful parse and signature validation of the OCSP response
+	// The Go OCSP library (as of x/crypto/ocsp v0.9) will detect and perform a 1-level delegate signature check but does not
+	// implement the additional criteria for delegation specified in RFC 6960, section 4.2.2.2.
+	if iss == nil || ocspr == nil {
+		return false
+	}
+	// not a delegation, no-op
+	if ocspr.Certificate == nil {
+		return true
+	}
+	// delegate is self-same with CA Issuer, not a delegation although response issued in that form
+	if ocspr.Certificate.Equal(iss) {
+		return true
+	}
+	// we need to verify CA Issuer stamped id-kp-OCSPSigning on delegate
+	delegatedSigner := false
+	for _, keyUseExt := range ocspr.Certificate.ExtKeyUsage {
+		if keyUseExt == x509.ExtKeyUsageOCSPSigning {
+			delegatedSigner = true
+			break
+		}
+	}
+	if !delegatedSigner {
 		return false
 	}
 	return true

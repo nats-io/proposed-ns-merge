@@ -72,6 +72,7 @@ var (
 	DbgCacheSaved            = "Saved OCSP peer cache successfully (%d bytes)"
 	DbgMakingCARequest       = "Trying OCSP responder url [%s]"
 	DbgResponseExpired       = "OCSP response NextUpdate [%s] is before now [%s] with clockskew [%s]"
+	DbgResponseTTLExpired    = "OCSP response cache expiry [%s] is before now [%s] with clockskew [%s]"
 	DbgResponseFutureDated   = "OCSP response ThisUpdate [%s] is before now [%s] with clockskew [%s]"
 	DbgCacheSaveTimerExpired = "OCSP peer cache save timer expired"
 	DbgCacheDirtySave        = "OCSP peer cache is dirty, saving"
@@ -96,8 +97,10 @@ var (
 	MsgCacheOffline = "OCSP peer cache offline, type [%s]"
 
 	// OCSP cert invalid reasons (debug and event reasons)
-	MsgFailedOCSPResponseFetch   = "Failed OCSP response fetch"
-	MsgOCSPResponseNotEffective  = "OCSP response not in effectivity window"
-	MsgFailedOCSPResponseParse   = "Failed OCSP response parse"
-	MsgOCSPResponseInvalidStatus = "Invalid OCSP response status: %s"
+	MsgFailedOCSPResponseFetch       = "Failed OCSP response fetch"
+	MsgOCSPResponseNotEffective      = "OCSP response not in effectivity window"
+	MsgFailedOCSPResponseParse       = "Failed OCSP response parse"
+	MsgOCSPResponseInvalidStatus     = "Invalid OCSP response status: %s"
+	MsgOCSPResponseDelegationInvalid = "Invalid OCSP response delegation: %s"
+	MsgCachedOCSPResponseInvalid     = "Invalid cached OCSP response for [%s] with fingerprint [%s]"
 )

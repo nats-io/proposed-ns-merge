@@ -470,6 +470,9 @@ You may enable OCSP peer response cacheing at server configuration root level:
 
         # Ignore cache deletes if cached OCSP response is Revoked status (default false)
         preserve_revoked: false
+
+        # For local store, interval to save in-memory cache to disk in seconds (default 300 seconds, minimum 1 second)
+        save_interval: 300
     }
     ...
 

@@ -79,6 +79,23 @@ func parseOCSPPeer(v interface{}) (pcfg *certidp.OCSPPeerConfig, retError error)
 				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, "unexpected type")}
 			}
 			pcfg.Timeout = at
+		case "cache_ttl_when_next_update_unset":
+			at := float64(0)
+			switch mv := mv.(type) {
+			case int64:
+				at = float64(mv)
+			case float64:
+				at = mv
+			case string:
+				d, err := time.ParseDuration(mv)
+				if err != nil {
+					return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, err)}
+				}
+				at = d.Seconds()
+			default:
+				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, "unexpected type")}
+			}
+			pcfg.TTLUnsetNextUpdate = at
 		case "warn_only":
 			warnOnly, ok := mv.(bool)
 			if !ok {
@@ -283,8 +300,16 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 	// Check our cache before calling out to the CA OCSP responder
 	s.Debugf(certidp.DbgCheckingCacheForCert, subj, fingerprint)
 	if rawResp = rc.Get(fingerprint, sLogs); rawResp != nil && len(rawResp) > 0 {
+		// Signature validation of CA's OCSP response occurs in ParseResponse
 		ocspr, err = ocsp.ParseResponse(rawResp, link.Issuer)
 		if err == nil && ocspr != nil {
+			// Check if OCSP Response delegation present and if so is valid
+			if !certidp.ValidDelegationCheck(link.Issuer, ocspr) {
+				// Invalid delegation was already in cache, purge it and don't use it
+				s.Debugf(certidp.MsgCachedOCSPResponseInvalid, subj)
+				rc.Delete(fingerprint, true, sLogs)
+				goto AFTERCACHE
+			}
 			if certidp.OCSPResponseCurrent(ocspr, opts, sLogs) {
 				s.Debugf(certidp.DbgCurrentResponseCached, certidp.GetStatusAssertionStr(ocspr.Status))
 				useCachedResp = true
@@ -298,8 +323,14 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 			if ocspr.Status == ocsp.Revoked {
 				cachedRevocation = true
 			}
+		} else {
+			// Bogus cached assertion, purge it and don't use it
+			s.Debugf(certidp.MsgCachedOCSPResponseInvalid, subj, fingerprint)
+			rc.Delete(fingerprint, true, sLogs)
+			goto AFTERCACHE
 		}
 	}
+AFTERCACHE:
 	if !useCachedResp {
 		// CA OCSP responder callout needed
 		rawResp, err = certidp.FetchOCSPResponse(link, opts, sLogs)
@@ -319,11 +350,23 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 			}
 			return certidp.MsgFailedOCSPResponseFetch, false
 		}
+		// Signature validation of CA's OCSP response occurs in ParseResponse
 		ocspr, err = ocsp.ParseResponse(rawResp, link.Issuer)
 		if err == nil && ocspr != nil {
+			// Check if OCSP Response delegation present and if so is valid
+			if !certidp.ValidDelegationCheck(link.Issuer, ocspr) {
+				s.Warnf(certidp.MsgOCSPResponseDelegationInvalid, subj)
+				if opts.WarnOnly {
+					// Can't use bogus assertion, but warn-only set so allow link to pass
+					s.Warnf(certidp.MsgAllowWarnOnlyOccurred, subj)
+					return _EMPTY_, true
+				}
+				return fmt.Sprintf(certidp.MsgOCSPResponseDelegationInvalid, subj), false
+			}
 			if !certidp.OCSPResponseCurrent(ocspr, opts, sLogs) {
 				s.Warnf(certidp.ErrNewCAResponseNotCurrent, subj)
 				if opts.WarnOnly {
+					// Can't use non-effective assertion, but warn-only set so allow link to pass
 					s.Warnf(certidp.MsgAllowWarnOnlyOccurred, subj)
 					return _EMPTY_, true
 				}
@@ -332,14 +375,17 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 		} else {
 			s.Errorf(certidp.ErrCAResponseParseFailed, subj, err)
 			if opts.WarnOnly {
+				// Can't use bogus assertion, but warn-only set so allow link to pass
 				s.Warnf(certidp.MsgAllowWarnOnlyOccurred, subj)
 				return _EMPTY_, true
 			}
 			return certidp.MsgFailedOCSPResponseParse, false
 		}
-		// cache the valid CA OCSP Response
+		// cache the valid fetched CA OCSP Response
 		rc.Put(fingerprint, ocspr, subj, sLogs)
 	}
+
+	// Whether through valid cache response available or newly fetched valid response, now check the status
 	if ocspr.Status == ocsp.Revoked || (ocspr.Status == ocsp.Unknown && !opts.UnknownIsGood) {
 		s.Warnf(certidp.ErrOCSPInvalidPeerLink, subj, certidp.GetStatusAssertionStr(ocspr.Status))
 		if opts.WarnOnly {
