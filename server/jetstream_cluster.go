@@ -8072,9 +8072,12 @@ func (mset *stream) processClusterStreamInfoRequest(reply string) {
 		time.Sleep(500 * time.Millisecond)
 	}
 
+	state := mset.state()
+	state.FirstTime = state.FirstTime.UTC()
+	state.LastTime = state.LastTime.UTC()
 	si := &StreamInfo{
 		Created: mset.createdTime(),
-		State:   mset.state(),
+		State:   state,
 		Config:  config,
 		Cluster: js.clusterInfo(mset.raftGroup()),
 		Sources: mset.sourcesInfo(),

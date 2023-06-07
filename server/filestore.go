@@ -1075,7 +1075,6 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, error) {
 
 		seq := le.Uint64(hdr[4:])
 		ts := int64(le.Uint64(hdr[12:]))
-
 		// This is an old erased message, or a new one that we can track.
 		if seq == 0 || seq&ebit != 0 || seq < mb.first.seq {
 			seq = seq &^ ebit
@@ -2327,7 +2326,7 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 	}
 
 	// Adjust first if needed.
-	now := time.Unix(0, ts).UTC()
+	now := time.Unix(0, ts)
 	if fs.state.Msgs == 0 {
 		fs.state.FirstSeq = seq
 		fs.state.FirstTime = now
@@ -2460,7 +2459,7 @@ func (fs *fileStore) SkipMsg() uint64 {
 	defer fs.mu.Unlock()
 
 	// Grab time and last seq.
-	now, seq := time.Now().UTC(), fs.state.LastSeq+1
+	now, seq := time.Now(), fs.state.LastSeq+1
 	fs.state.LastSeq, fs.state.LastTime = seq, now
 	if fs.state.Msgs == 0 {
 		fs.state.FirstSeq, fs.state.FirstTime = seq, now
@@ -4841,7 +4840,7 @@ func (mb *msgBlock) sinceLastWriteActivity() time.Duration {
 	if mb.lrts > last {
 		last = mb.lrts
 	}
-	return time.Since(time.Unix(0, last).UTC())
+	return time.Since(time.Unix(0, last))
 }
 
 // Determine if we need to write out this index info.
@@ -4879,9 +4878,9 @@ func (mb *msgBlock) writeIndexInfoLocked() error {
 	n += binary.PutUvarint(hdr[n:], mb.msgs)
 	n += binary.PutUvarint(hdr[n:], mb.bytes)
 	n += binary.PutUvarint(hdr[n:], mb.first.seq)
-	n += binary.PutVarint(hdr[n:], mb.first.ts)
+	n += binary.PutUvarint(hdr[n:], uint64(mb.first.ts))
 	n += binary.PutUvarint(hdr[n:], mb.last.seq)
-	n += binary.PutVarint(hdr[n:], mb.last.ts)
+	n += binary.PutUvarint(hdr[n:], uint64(mb.last.ts))
 	n += binary.PutUvarint(hdr[n:], uint64(len(mb.dmap)))
 	buf := append(hdr[:n], mb.lchk[:]...)
 

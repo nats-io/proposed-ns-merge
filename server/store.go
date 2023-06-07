@@ -122,7 +122,7 @@ const (
 	WorkQueuePolicy
 )
 
-// Discard Policy determines how we proceed when limits of messages or bytes are hit. The default, DicscardOld will
+// Discard Policy determines how we proceed when limits of messages or bytes are hit. The default, DiscardOld will
 // remove older messages. DiscardNew will fail to store the new message.
 type DiscardPolicy int
 

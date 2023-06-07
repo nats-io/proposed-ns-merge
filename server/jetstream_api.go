@@ -1681,9 +1681,12 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 
 	for _, mset := range msets[offset:] {
 		config := mset.config()
+		state := mset.state()
+		state.FirstTime = state.FirstTime.UTC()
+		state.LastTime = state.LastTime.UTC()
 		resp.Streams = append(resp.Streams, &StreamInfo{
 			Created: mset.createdTime(),
-			State:   mset.state(),
+			State:   state,
 			Config:  config,
 			Domain:  s.getOpts().JetStreamDomain,
 			Mirror:  mset.mirrorInfo(),
@@ -1833,9 +1836,12 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 
 	js, _ := s.getJetStreamCluster()
 
+	state := mset.stateWithDetail(details)
+	state.FirstTime = state.FirstTime.UTC()
+	state.LastTime = state.LastTime.UTC()
 	resp.StreamInfo = &StreamInfo{
 		Created:    mset.createdTime(),
-		State:      mset.stateWithDetail(details),
+		State:      state,
 		Config:     config,
 		Domain:     s.getOpts().JetStreamDomain,
 		Cluster:    js.clusterInfo(mset.raftGroup()),
@@ -3544,7 +3550,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, _ *Accoun
 			s.Noticef("Starting snapshot for stream '%s > %s'", mset.jsa.account.Name, mset.name())
 		}
 
-		start := time.Now().UTC()
+		start := time.Now()
 
 		sr, err := mset.snapshot(0, req.CheckMsgs, !req.NoConsumers)
 		if err != nil {
@@ -3575,17 +3581,17 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, _ *Accoun
 		// Now do the real streaming.
 		s.streamSnapshot(ci, acc, mset, sr, &req)
 
-		end := time.Now().UTC()
+		end := time.Now()
 
 		s.publishAdvisory(acc, JSAdvisoryStreamSnapshotCompletePre+"."+mset.name(), &JSSnapshotCompleteAdvisory{
 			TypedEvent: TypedEvent{
 				Type: JSSnapshotCompleteAdvisoryType,
 				ID:   nuid.Next(),
-				Time: end,
+				Time: end.UTC(),
 			},
 			Stream: mset.name(),
-			Start:  start,
-			End:    end,
+			Start:  start.UTC(),
+			End:    end.UTC(),
 			Client: ci,
 			Domain: s.getOpts().JetStreamDomain,
 		})

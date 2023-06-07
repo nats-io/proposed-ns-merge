@@ -143,7 +143,7 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 	}
 
 	// Adjust first if needed.
-	now := time.Unix(0, ts).UTC()
+	now := time.Unix(0, ts)
 	if ms.state.Msgs == 0 {
 		ms.state.FirstSeq = seq
 		ms.state.FirstTime = now
@@ -238,7 +238,7 @@ func (ms *memStore) StoreMsg(subj string, hdr, msg []byte) (uint64, int64, error
 // SkipMsg will use the next sequence number but not store anything.
 func (ms *memStore) SkipMsg() uint64 {
 	// Grab time.
-	now := time.Now().UTC()
+	now := time.Now()
 
 	ms.mu.Lock()
 	seq := ms.state.LastSeq + 1
