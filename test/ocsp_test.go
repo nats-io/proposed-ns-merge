@@ -2862,6 +2862,11 @@ func TestOCSPCustomConfigReloadEnable(t *testing.T) {
 	nc.Close()
 }
 
+func newOCSPResponderCustomAddress(t *testing.T, issuerCertPEM, issuerKeyPEM string, addr string) *http.Server {
+	t.Helper()
+	return newOCSPResponderDesignated(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false, addr)
+}
+
 func newOCSPResponder(t *testing.T, issuerCertPEM, issuerKeyPEM string) *http.Server {
 	t.Helper()
 	return newOCSPResponderDesignated(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false, "127.0.0.1:8888")
