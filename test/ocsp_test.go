@@ -38,6 +38,11 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+const (
+	defaultResponseTTL = 4 * time.Second
+	defaultAddress     = "127.0.0.1:8888"
+)
+
 func TestOCSPAlwaysMustStapleAndShutdown(t *testing.T) {
 	// Certs that have must staple will auto shutdown the server.
 	const (
@@ -2303,7 +2308,7 @@ func TestOCSPGatewayIntermediate(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ocspr := newOCSPResponderDesignated(t, caCert, caIntermCert, caIntermKey, true, "127.0.0.1:8888")
+	ocspr := newOCSPResponderDesignated(t, caCert, caIntermCert, caIntermKey)
 	defer ocspr.Shutdown(ctx)
 
 	addr := fmt.Sprintf("http://%s", ocspr.Addr)
@@ -2864,15 +2869,25 @@ func TestOCSPCustomConfigReloadEnable(t *testing.T) {
 
 func newOCSPResponderCustomAddress(t *testing.T, issuerCertPEM, issuerKeyPEM string, addr string) *http.Server {
 	t.Helper()
-	return newOCSPResponderDesignated(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false, addr)
+	return newOCSPResponderBase(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false, addr, defaultResponseTTL)
 }
 
 func newOCSPResponder(t *testing.T, issuerCertPEM, issuerKeyPEM string) *http.Server {
 	t.Helper()
-	return newOCSPResponderDesignated(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false, "127.0.0.1:8888")
+	return newOCSPResponderBase(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false, defaultAddress, defaultResponseTTL)
 }
 
-func newOCSPResponderDesignated(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM string, embed bool, addr string) *http.Server {
+func newOCSPResponderDesignated(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM string) *http.Server {
+	t.Helper()
+	return newOCSPResponderBase(t, issuerCertPEM, respCertPEM, respKeyPEM, true, defaultAddress, defaultResponseTTL)
+}
+
+func newOCSPResponderDesignatedCustomAddress(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM string, addr string) *http.Server {
+	t.Helper()
+	return newOCSPResponderBase(t, issuerCertPEM, respCertPEM, respKeyPEM, true, addr, defaultResponseTTL)
+}
+
+func newOCSPResponderBase(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM string, embed bool, addr string, responseTTL time.Duration) *http.Server {
 	t.Helper()
 	var mu sync.Mutex
 	status := make(map[string]int)
@@ -2953,7 +2968,9 @@ func newOCSPResponderDesignated(t *testing.T, issuerCertPEM, respCertPEM, respKe
 			Status:       n,
 			SerialNumber: ocspReq.SerialNumber,
 			ThisUpdate:   time.Now(),
-			NextUpdate:   time.Now().Add(4 * time.Second),
+		}
+		if responseTTL != 0 {
+			tmpl.NextUpdate = tmpl.ThisUpdate.Add(responseTTL)
 		}
 		if embed {
 			tmpl.Certificate = respCert

@@ -36,7 +36,7 @@ func newOCSPResponderRootCA(t *testing.T) *http.Server {
 	respCertPEM := "configs/certs/ocsp_peer/mini-ca/caocsp/caocsp_cert.pem"
 	respKeyPEM := "configs/certs/ocsp_peer/mini-ca/caocsp/private/caocsp_keypair.pem"
 	issuerCertPEM := "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
-	return newOCSPResponderDesignated(t, issuerCertPEM, respCertPEM, respKeyPEM, true, "127.0.0.1:8888")
+	return newOCSPResponderDesignatedCustomAddress(t, issuerCertPEM, respCertPEM, respKeyPEM, "127.0.0.1:8888")
 }
 
 func newOCSPResponderIntermediateCA1(t *testing.T) *http.Server {
@@ -44,7 +44,7 @@ func newOCSPResponderIntermediateCA1(t *testing.T) *http.Server {
 	respCertPEM := "configs/certs/ocsp_peer/mini-ca/ocsp1/ocsp1_bundle.pem"
 	respKeyPEM := "configs/certs/ocsp_peer/mini-ca/ocsp1/private/ocsp1_keypair.pem"
 	issuerCertPEM := "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem"
-	return newOCSPResponderDesignated(t, issuerCertPEM, respCertPEM, respKeyPEM, true, "127.0.0.1:18888")
+	return newOCSPResponderDesignatedCustomAddress(t, issuerCertPEM, respCertPEM, respKeyPEM, "127.0.0.1:18888")
 }
 
 func newOCSPResponderIntermediateCA1Undelegated(t *testing.T) *http.Server {
@@ -60,7 +60,7 @@ func newOCSPResponderBadDelegateIntermediateCA1(t *testing.T) *http.Server {
 	respCertPEM := "configs/certs/ocsp_peer/mini-ca/client1/UserA2_bundle.pem"
 	respKeyPEM := "configs/certs/ocsp_peer/mini-ca/client1/private/UserA2_keypair.pem"
 	issuerCertPEM := "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem"
-	return newOCSPResponderDesignated(t, issuerCertPEM, respCertPEM, respKeyPEM, true, "127.0.0.1:18888")
+	return newOCSPResponderDesignatedCustomAddress(t, issuerCertPEM, respCertPEM, respKeyPEM, "127.0.0.1:18888")
 }
 
 func newOCSPResponderIntermediateCA2(t *testing.T) *http.Server {
@@ -68,7 +68,7 @@ func newOCSPResponderIntermediateCA2(t *testing.T) *http.Server {
 	respCertPEM := "configs/certs/ocsp_peer/mini-ca/ocsp2/ocsp2_bundle.pem"
 	respKeyPEM := "configs/certs/ocsp_peer/mini-ca/ocsp2/private/ocsp2_keypair.pem"
 	issuerCertPEM := "configs/certs/ocsp_peer/mini-ca/intermediate2/intermediate2_cert.pem"
-	return newOCSPResponderDesignated(t, issuerCertPEM, respCertPEM, respKeyPEM, true, "127.0.0.1:28888")
+	return newOCSPResponderDesignatedCustomAddress(t, issuerCertPEM, respCertPEM, respKeyPEM, "127.0.0.1:28888")
 }
 
 // TestOCSPPeerGoodClients is test of two NATS client (AIA enabled at leaf and cert) under good path (different intermediates)
