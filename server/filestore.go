@@ -4972,13 +4972,13 @@ func (mb *msgBlock) readIndexInfo() error {
 		if bi < 0 {
 			return 0
 		}
-		ts, n := binary.Varint(buf[bi:])
+		ts, n := binary.Uvarint(buf[bi:])
 		if n <= 0 {
 			bi = -1
 			return -1
 		}
 		bi += n
-		return ts
+		return int64(ts)
 	}
 	mb.msgs = readCount()
 	mb.bytes = readCount()
