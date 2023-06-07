@@ -94,6 +94,18 @@ type OCSPPeerConfig struct {
 	TTLUnsetNextUpdate     float64
 }
 
+func NewOCSPPeerConfig() *OCSPPeerConfig {
+	return &OCSPPeerConfig{
+		Verify:                 false,
+		Timeout:                DefaultOCSPResponderTimeout.Seconds(),
+		ClockSkew:              DefaultAllowedClockSkew.Seconds(),
+		WarnOnly:               false,
+		UnknownIsGood:          false,
+		AllowWhenCAUnreachable: false,
+		TTLUnsetNextUpdate:     DefaultTTLUnsetNextUpdate.Seconds(),
+	}
+}
+
 // Log is a neutral method of passign server loggers to plugins
 type Log struct {
 	Debugf  func(format string, v ...interface{})

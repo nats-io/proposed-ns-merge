@@ -34,7 +34,7 @@ func parseOCSPPeer(v interface{}) (pcfg *certidp.OCSPPeerConfig, retError error)
 	if !ok {
 		return nil, &configErr{tk, fmt.Sprintf(certidp.ErrIllegalPeerOptsConfig, v)}
 	}
-	pcfg = &certidp.OCSPPeerConfig{}
+	pcfg = certidp.NewOCSPPeerConfig()
 	retError = nil
 	for mk, mv := range cm {
 		tk, mv = unwrapValue(mv, &lt)
@@ -61,7 +61,9 @@ func parseOCSPPeer(v interface{}) (pcfg *certidp.OCSPPeerConfig, retError error)
 			default:
 				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, "unexpected type")}
 			}
-			pcfg.ClockSkew = at
+			if at >= 0 {
+				pcfg.ClockSkew = at
+			}
 		case "ca_timeout":
 			at := float64(0)
 			switch mv := mv.(type) {
@@ -78,7 +80,9 @@ func parseOCSPPeer(v interface{}) (pcfg *certidp.OCSPPeerConfig, retError error)
 			default:
 				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, "unexpected type")}
 			}
-			pcfg.Timeout = at
+			if at >= 0 {
+				pcfg.Timeout = at
+			}
 		case "cache_ttl_when_next_update_unset":
 			at := float64(0)
 			switch mv := mv.(type) {
@@ -95,7 +99,9 @@ func parseOCSPPeer(v interface{}) (pcfg *certidp.OCSPPeerConfig, retError error)
 			default:
 				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingPeerOptFieldTypeConversion, "unexpected type")}
 			}
-			pcfg.TTLUnsetNextUpdate = at
+			if at >= 0 {
+				pcfg.TTLUnsetNextUpdate = at
+			}
 		case "warn_only":
 			warnOnly, ok := mv.(bool)
 			if !ok {

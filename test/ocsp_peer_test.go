@@ -1612,7 +1612,10 @@ func TestOCSPPeerPreserveRevokedCacheItem(t *testing.T) {
 					timeout: 5
 					verify: true
 					# Turn on CA OCSP check so this revoked client should NOT be able to connect
-					ocsp_peer: true
+					ocsp_peer: {
+						verify: true
+						ca_timeout: 0.5
+					}
 				}
 				# preserve revoked true
 				ocsp_cache: {

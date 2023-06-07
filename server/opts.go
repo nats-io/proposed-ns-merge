@@ -4190,17 +4190,14 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 		case "ocsp_peer":
 			switch vv := mv.(type) {
 			case bool:
+				pc := certidp.NewOCSPPeerConfig()
 				if vv {
-					// Set enabled with no cache
-					pc := &certidp.OCSPPeerConfig{
-						Verify: true,
-					}
+					// Set enabled
+					pc.Verify = true
 					tc.OCSPPeerConfig = pc
 				} else {
 					// Set disabled
-					pc := &certidp.OCSPPeerConfig{
-						Verify: false,
-					}
+					pc.Verify = false
 					tc.OCSPPeerConfig = pc
 				}
 			case map[string]interface{}:
