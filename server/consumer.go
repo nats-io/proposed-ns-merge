@@ -629,7 +629,7 @@ func (mset *stream) addConsumerWithAction(config *ConsumerConfig, action string)
 }
 
 func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
-	return mset.addConsumerWithAction(config, "")
+	return mset.addConsumerWithAction(config, _EMPTY_)
 }
 
 func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment, isRecovering bool, action string) (*consumer, error) {
