@@ -473,7 +473,7 @@ func TestJetStreamConsumerActions(t *testing.T) {
 		AckPolicy:      AckExplicit,
 		DeliverPolicy:  DeliverAll,
 		AckWait:        time.Second * 30,
-	}, "CREATE")
+	}, ActionCreate)
 	require_NoError(t, err)
 	// Create consumer again. Should be ok if action is CREATE but config is exactly the same.
 	_, err = mset.addConsumerWithAction(&ConsumerConfig{
@@ -482,7 +482,7 @@ func TestJetStreamConsumerActions(t *testing.T) {
 		AckPolicy:      AckExplicit,
 		DeliverPolicy:  DeliverAll,
 		AckWait:        time.Second * 30,
-	}, "CREATE")
+	}, ActionCreate)
 	require_NoError(t, err)
 	// Create consumer again. Should error if action is CREATE.
 	_, err = mset.addConsumerWithAction(&ConsumerConfig{
@@ -491,7 +491,7 @@ func TestJetStreamConsumerActions(t *testing.T) {
 		AckPolicy:      AckExplicit,
 		DeliverPolicy:  DeliverAll,
 		AckWait:        time.Second * 30,
-	}, "CREATE")
+	}, ActionCreate)
 	require_Error(t, err)
 
 	// Update existing consumer. Should be fine, as consumer exists.
@@ -501,7 +501,7 @@ func TestJetStreamConsumerActions(t *testing.T) {
 		AckPolicy:      AckExplicit,
 		DeliverPolicy:  DeliverAll,
 		AckWait:        time.Second * 30,
-	}, "UPDATE")
+	}, ActionUpdate)
 	require_NoError(t, err)
 
 	// Update consumer. Should error, as this consumer does not exist.
@@ -511,6 +511,6 @@ func TestJetStreamConsumerActions(t *testing.T) {
 		AckPolicy:      AckExplicit,
 		DeliverPolicy:  DeliverAll,
 		AckWait:        time.Second * 30,
-	}, "UPDATE")
+	}, ActionUpdate)
 	require_NoError(t, err)
 }

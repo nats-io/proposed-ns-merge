@@ -3997,7 +3997,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	var didCreate, isConfigUpdate, needsLocalResponse bool
 	if o == nil {
 		// Add in the consumer if needed.
-		if o, err = mset.addConsumerWithAssignment(ca.Config, ca.Name, ca, false, _EMPTY_); err == nil {
+		if o, err = mset.addConsumerWithAssignment(ca.Config, ca.Name, ca, false, ActionCreateOrUpdate); err == nil {
 			didCreate = true
 		}
 	} else {
@@ -6724,7 +6724,7 @@ func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *stre
 }
 
 // jsClusteredConsumerRequest is first point of entry to create a consumer with R > 1.
-func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, stream string, cfg *ConsumerConfig, action string) {
+func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, stream string, cfg *ConsumerConfig, action ConsumerAction) {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
 		return
@@ -6825,7 +6825,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			oname = cfg.Durable
 		}
 		if ca = sa.consumers[oname]; ca != nil && !ca.deleted {
-			if strings.ToUpper(action) == ActionCreate && !reflect.DeepEqual(cfg, ca.Config) {
+			if action == ActionCreate && !reflect.DeepEqual(cfg, ca.Config) {
 				resp.Error = NewJSConsumerAlreadyExistsError()
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 			}
@@ -6840,7 +6840,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 
 	// If this is new consumer.
 	if ca == nil {
-		if strings.ToUpper(action) == ActionUpdate {
+		if action == ActionUpdate {
 			resp.Error = NewJSConsumerDoesNotExistError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		}
