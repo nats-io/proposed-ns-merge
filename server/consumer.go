@@ -116,7 +116,7 @@ type SequenceInfo struct {
 type CreateConsumerRequest struct {
 	Stream string         `json:"stream_name"`
 	Config ConsumerConfig `json:"config"`
-	Action ConsumerAction `json:"action" `
+	Action ConsumerAction `json:"action"`
 }
 
 type ConsumerAction int
