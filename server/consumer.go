@@ -127,20 +127,46 @@ const (
 	ActionCreate
 )
 
-func (action *ConsumerAction) UnmarshalJSON(b []byte) error {
-	var str string
-	if err := json.Unmarshal(b, &str); err != nil {
-		return err
+const (
+	actionUpdateString         = "update"
+	actionCreateString         = "create"
+	actionCreateOrUpdateString = ""
+)
+
+func (a ConsumerAction) String() string {
+	switch a {
+	case ActionCreateOrUpdate:
+		return actionCreateOrUpdateString
+	case ActionCreate:
+		return actionCreateString
+	case ActionUpdate:
+		return actionUpdateString
 	}
-	switch strings.ToLower(str) {
-	case "create":
-		*action = ActionCreate
-	case "update":
-		*action = ActionUpdate
-	case "":
-		*action = ActionCreateOrUpdate
+	return actionCreateOrUpdateString
+}
+func (a ConsumerAction) MarshalJSON() ([]byte, error) {
+	switch a {
+	case ActionCreate:
+		return json.Marshal(actionCreateString)
+	case ActionUpdate:
+		return json.Marshal(actionUpdateString)
+	case ActionCreateOrUpdate:
+		return json.Marshal(actionCreateOrUpdateString)
 	default:
-		return fmt.Errorf("unknown consumer action: %v", str)
+		return nil, fmt.Errorf("can not marshal %v", a)
+	}
+}
+
+func (a *ConsumerAction) UnmarshalJSON(data []byte) error {
+	switch string(data) {
+	case jsonString("create"):
+		*a = ActionCreate
+	case jsonString("update"):
+		*a = ActionUpdate
+	case jsonString(""):
+		*a = ActionCreateOrUpdate
+	default:
+		return fmt.Errorf("unknown consumer action: %v", string(data))
 	}
 	return nil
 }

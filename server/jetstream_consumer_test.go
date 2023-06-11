@@ -523,7 +523,7 @@ func TestConsumerActionsUnmarshal(t *testing.T) {
 		expected  ConsumerAction
 		expectErr bool
 	}{
-		{name: "action creat", given: []byte(`{"action": "CREATE"}`), expected: ActionCreate},
+		{name: "action creat", given: []byte(`{"action": "create"}`), expected: ActionCreate},
 		{name: "action update", given: []byte(`{"action": "update"}`), expected: ActionUpdate},
 		{name: "no action", given: []byte("{}"), expected: ActionCreateOrUpdate},
 		{name: "unknown", given: []byte(`{"action": "unknown"}`), expected: ActionCreateOrUpdate, expectErr: true},
