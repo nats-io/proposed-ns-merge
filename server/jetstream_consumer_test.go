@@ -17,6 +17,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -513,4 +514,33 @@ func TestJetStreamConsumerActions(t *testing.T) {
 		AckWait:        time.Second * 30,
 	}, ActionUpdate)
 	require_NoError(t, err)
+}
+
+func TestConsumerActionsUnmarshal(t *testing.T) {
+	tests := []struct {
+		name      string
+		given     []byte
+		expected  ConsumerAction
+		expectErr bool
+	}{
+		{name: "action creat", given: []byte(`{"action": "CREATE"}`), expected: ActionCreate},
+		{name: "action update", given: []byte(`{"action": "update"}`), expected: ActionUpdate},
+		{name: "no action", given: []byte("{}"), expected: ActionCreateOrUpdate},
+		{name: "unknown", given: []byte(`{"action": "unknown"}`), expected: ActionCreateOrUpdate, expectErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+
+			var request CreateConsumerRequest
+			err := json.Unmarshal(test.given, &request)
+			fmt.Printf("given: %v, expecetd: %v\n", test.expectErr, err)
+			if !test.expectErr {
+				require_NoError(t, err)
+			} else {
+				require_Error(t, err)
+			}
+			require_True(t, test.expected == request.Action)
+		})
+	}
 }

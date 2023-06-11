@@ -127,6 +127,24 @@ const (
 	ActionCreate
 )
 
+func (action *ConsumerAction) UnmarshalJSON(b []byte) error {
+	var str string
+	if err := json.Unmarshal(b, &str); err != nil {
+		return err
+	}
+	switch strings.ToLower(str) {
+	case "create":
+		*action = ActionCreate
+	case "update":
+		*action = ActionUpdate
+	case "":
+		*action = ActionCreateOrUpdate
+	default:
+		return fmt.Errorf("unknown consumer action: %v", str)
+	}
+	return nil
+}
+
 // ConsumerNakOptions is for optional NAK values, e.g. delay.
 type ConsumerNakOptions struct {
 	Delay time.Duration `json:"delay"`
