@@ -19,19 +19,37 @@ import (
 	"fmt"
 	"net/http"
 	"net/textproto"
+	"sync"
 )
 
 type parserState int
 type parseState struct {
-	state   parserState
-	op      byte
-	as      int
-	drop    int
-	pa      pubArg
-	argBuf  []byte
-	msgBuf  []byte
-	header  http.Header // access via getHeader
-	scratch [MAX_CONTROL_LINE_SIZE]byte
+	state  parserState
+	op     byte
+	as     int
+	drop   int
+	pa     pubArg
+	argBuf []byte
+	msgBuf []byte
+	header http.Header // access via getHeader
+}
+
+var parseStateScratch = &sync.Pool{
+	New: func() any {
+		b := [MAX_CONTROL_LINE_SIZE]byte{}
+		return &b
+	},
+}
+
+func getParseStateScratch() []byte {
+	return parseStateScratch.Get().(*[MAX_CONTROL_LINE_SIZE]byte)[:0]
+}
+
+func putParseStateScratch(b []byte) {
+	if cap(b) != MAX_CONTROL_LINE_SIZE {
+		return
+	}
+	parseStateScratch.Put((*[MAX_CONTROL_LINE_SIZE]byte)(b[:MAX_CONTROL_LINE_SIZE]))
 }
 
 type pubArg struct {
@@ -275,6 +293,7 @@ func (c *client) parse(buf []byte) error {
 				var arg []byte
 				if c.argBuf != nil {
 					arg = c.argBuf
+					defer putParseStateScratch(c.argBuf)
 					c.argBuf = nil
 				} else {
 					arg = buf[c.as : i-c.drop]
@@ -339,6 +358,7 @@ func (c *client) parse(buf []byte) error {
 				var arg []byte
 				if c.argBuf != nil {
 					arg = c.argBuf
+					defer putParseStateScratch(c.argBuf)
 					c.argBuf = nil
 				} else {
 					arg = buf[c.as : i-c.drop]
@@ -414,6 +434,7 @@ func (c *client) parse(buf []byte) error {
 				var arg []byte
 				if c.argBuf != nil {
 					arg = c.argBuf
+					defer putParseStateScratch(c.argBuf)
 					c.argBuf = nil
 				} else {
 					arg = buf[c.as : i-c.drop]
@@ -495,6 +516,8 @@ func (c *client) parse(buf []byte) error {
 			}
 
 			c.processInboundMsg(c.msgBuf)
+			defer putParseStateScratch(c.argBuf)
+			defer putParseStateScratch(c.msgBuf)
 			c.argBuf, c.msgBuf, c.header = nil, nil, nil
 			c.drop, c.as, c.state = 0, i+1, OP_START
 			// Drop all pub args
@@ -533,6 +556,7 @@ func (c *client) parse(buf []byte) error {
 				var arg []byte
 				if c.argBuf != nil {
 					arg = c.argBuf
+					defer putParseStateScratch(c.argBuf)
 					c.argBuf = nil
 				} else {
 					arg = buf[c.as : i-c.drop]
@@ -575,6 +599,7 @@ func (c *client) parse(buf []byte) error {
 				var arg []byte
 				if c.argBuf != nil {
 					arg = c.argBuf
+					defer putParseStateScratch(c.argBuf)
 					c.argBuf = nil
 				} else {
 					arg = buf[c.as : i-c.drop]
@@ -629,6 +654,7 @@ func (c *client) parse(buf []byte) error {
 				var arg []byte
 				if c.argBuf != nil {
 					arg = c.argBuf
+					defer putParseStateScratch(c.argBuf)
 					c.argBuf = nil
 				} else {
 					arg = buf[c.as : i-c.drop]
@@ -764,6 +790,7 @@ func (c *client) parse(buf []byte) error {
 				var arg []byte
 				if c.argBuf != nil {
 					arg = c.argBuf
+					defer putParseStateScratch(c.argBuf)
 					c.argBuf = nil
 				} else {
 					arg = buf[c.as : i-c.drop]
@@ -913,6 +940,7 @@ func (c *client) parse(buf []byte) error {
 				var arg []byte
 				if c.argBuf != nil {
 					arg = c.argBuf
+					defer putParseStateScratch(c.argBuf)
 					c.argBuf = nil
 				} else {
 					arg = buf[c.as : i-c.drop]
@@ -974,6 +1002,7 @@ func (c *client) parse(buf []byte) error {
 				var arg []byte
 				if c.argBuf != nil {
 					arg = c.argBuf
+					defer putParseStateScratch(c.argBuf)
 					c.argBuf = nil
 				} else {
 					arg = buf[c.as : i-c.drop]
@@ -1053,6 +1082,7 @@ func (c *client) parse(buf []byte) error {
 				var arg []byte
 				if c.argBuf != nil {
 					arg = c.argBuf
+					defer putParseStateScratch(c.argBuf)
 					c.argBuf = nil
 				} else {
 					arg = buf[c.as : i-c.drop]
@@ -1132,6 +1162,7 @@ func (c *client) parse(buf []byte) error {
 				var arg []byte
 				if c.argBuf != nil {
 					arg = c.argBuf
+					defer putParseStateScratch(c.argBuf)
 					c.argBuf = nil
 				} else {
 					arg = buf[c.as : i-c.drop]
@@ -1160,8 +1191,7 @@ func (c *client) parse(buf []byte) error {
 
 		// Setup a holder buffer to deal with split buffer scenario.
 		if c.argBuf == nil {
-			c.argBuf = c.scratch[:0]
-			c.argBuf = append(c.argBuf, buf[c.as:i-c.drop]...)
+			c.argBuf = append(getParseStateScratch(), buf[c.as:i-c.drop]...)
 		}
 		// Check for violations of control line length here. Note that this is not
 		// exact at all but the performance hit is too great to be precise, and
@@ -1185,7 +1215,7 @@ func (c *client) parse(buf []byte) error {
 
 		// If we will overflow the scratch buffer, just create a
 		// new buffer to hold the split message.
-		if c.pa.size > cap(c.scratch)-len(c.argBuf) {
+		if c.pa.size > MAX_CONTROL_LINE_SIZE-len(c.argBuf) {
 			lrem := len(buf[c.as:])
 			// Consider it a protocol error when the remaining payload
 			// is larger than the reported size for PUB. It can happen
@@ -1196,8 +1226,7 @@ func (c *client) parse(buf []byte) error {
 			c.msgBuf = make([]byte, lrem, c.pa.size+LEN_CR_LF)
 			copy(c.msgBuf, buf[c.as:])
 		} else {
-			c.msgBuf = c.scratch[len(c.argBuf):len(c.argBuf)]
-			c.msgBuf = append(c.msgBuf, (buf[c.as:])...)
+			c.msgBuf = append(getParseStateScratch(), (buf[c.as:])...)
 		}
 	}
 
@@ -1247,8 +1276,7 @@ func (c *client) overMaxControlLineLimit(arg []byte, mcl int32) error {
 // we need to hold onto it into the next read.
 func (c *client) clonePubArg(lmsg bool) error {
 	// Just copy and re-process original arg buffer.
-	c.argBuf = c.scratch[:0]
-	c.argBuf = append(c.argBuf, c.pa.arg...)
+	c.argBuf = append(getParseStateScratch(), c.pa.arg...)
 
 	switch c.kind {
 	case ROUTER, GATEWAY:
