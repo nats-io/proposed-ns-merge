@@ -516,7 +516,81 @@ func TestJetStreamConsumerActions(t *testing.T) {
 	require_Error(t, err)
 }
 
-func TestConsumerActionsUnmarshal(t *testing.T) {
+func TestJetStreamConsumerActionsViaAPI(t *testing.T) {
+
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+	acc := s.GlobalAccount()
+
+	_, err := acc.addStream(&StreamConfig{
+		Name:      "TEST",
+		Retention: LimitsPolicy,
+		Subjects:  []string{"one"},
+		MaxAge:    time.Second * 90,
+	})
+	require_NoError(t, err)
+
+	// Update non-existing consumer, which should fail.
+	request, err := json.Marshal(&CreateConsumerRequest{
+		Action: ActionUpdate,
+		Config: ConsumerConfig{
+			Durable: "hello",
+		},
+		Stream: "TEST",
+	})
+	require_NoError(t, err)
+
+	resp, err := nc.Request("$JS.API.CONSUMER.DURABLE.CREATE.TEST.hello", []byte(request), time.Second*6)
+	require_NoError(t, err)
+	var ccResp JSApiConsumerCreateResponse
+	err = json.Unmarshal(resp.Data, &ccResp)
+	require_NoError(t, err)
+	require_Error(t, ccResp.Error)
+
+	// create non existing consumer - which should be fine.
+	ccResp.Error = nil
+	request, err = json.Marshal(&CreateConsumerRequest{
+		Action: ActionCreate,
+		Config: ConsumerConfig{
+			Durable: "hello",
+		},
+		Stream: "TEST",
+	})
+	require_NoError(t, err)
+
+	resp, err = nc.Request("$JS.API.CONSUMER.DURABLE.CREATE.TEST.hello", []byte(request), time.Second*6)
+	require_NoError(t, err)
+	err = json.Unmarshal(resp.Data, &ccResp)
+	require_NoError(t, err)
+	if ccResp.Error != nil {
+		t.Fatalf("expected nil, got %v", ccResp.Error)
+	}
+
+	// re-create existing consumer - which should be an error.
+	ccResp.Error = nil
+	request, err = json.Marshal(&CreateConsumerRequest{
+		Action: ActionCreate,
+		Config: ConsumerConfig{
+			Durable:       "hello",
+			FilterSubject: "one",
+		},
+		Stream: "TEST",
+	})
+	require_NoError(t, err)
+	resp, err = nc.Request("$JS.API.CONSUMER.DURABLE.CREATE.TEST.hello", []byte(request), time.Second*6)
+	require_NoError(t, err)
+	err = json.Unmarshal(resp.Data, &ccResp)
+	require_NoError(t, err)
+	if ccResp.Error == nil {
+		t.Fatalf("expected err, got nil")
+	}
+
+}
+
+func TestJetStreamConsumerActionsUnmarshal(t *testing.T) {
 	tests := []struct {
 		name      string
 		given     []byte

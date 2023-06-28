@@ -3889,7 +3889,7 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		return
 	}
 
-	o, err := stream.addConsumer(&req.Config)
+	o, err := stream.addConsumerWithAction(&req.Config, req.Action)
 
 	if err != nil {
 		if IsNatsErr(err, JSConsumerStoreFailedErrF) {
