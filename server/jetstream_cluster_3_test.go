@@ -4583,7 +4583,6 @@ func TestJetStreamClusterConsumerActions(t *testing.T) {
 		t.Fatalf("Unexpected er response: %v", ccResp.Error)
 	}
 	ccResp.Error = nil
-	// Consumer exists, but config is the same, so should be ok
 	// Consumer exists. Config is different, so should error
 	crReq.Config.Description = "changed"
 	req, err = json.Marshal(crReq)
@@ -4593,7 +4592,7 @@ func TestJetStreamClusterConsumerActions(t *testing.T) {
 	err = json.Unmarshal(resp.Data, &ccResp)
 	require_NoError(t, err)
 	if ccResp.Error == nil {
-		t.Fatalf("Unexpected ok response: %v", ccResp.Error)
+		t.Fatalf("Unexpected ok response")
 	}
 
 	ccResp.Error = nil
@@ -4610,6 +4609,7 @@ func TestJetStreamClusterConsumerActions(t *testing.T) {
 		t.Fatalf("Unexpected error response: %v", ccResp.Error)
 	}
 
+	ecSubj = fmt.Sprintf(JSApiConsumerCreateExT, "TEST", "NEW", "test")
 	ccResp.Error = nil
 	// Updating new consumer, so should error
 	crReq.Config.Name = "NEW"
@@ -4619,8 +4619,7 @@ func TestJetStreamClusterConsumerActions(t *testing.T) {
 	require_NoError(t, err)
 	err = json.Unmarshal(resp.Data, &ccResp)
 	require_NoError(t, err)
-	if ccResp.Error != nil {
-		t.Fatalf("Unexpected err response: %v", ccResp.Error)
+	if ccResp.Error == nil {
+		t.Fatalf("Unexpected ok response")
 	}
-
 }

@@ -6843,6 +6843,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		if action == ActionUpdate {
 			resp.Error = NewJSConsumerDoesNotExistError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+			return
 		}
 		rg := cc.createGroupForConsumer(cfg, sa)
 		if rg == nil {

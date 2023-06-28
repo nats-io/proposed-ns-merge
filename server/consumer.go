@@ -759,8 +759,9 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			return nil, NewJSConsumerCreateError(err, Unless(err))
 		}
 	}
-	if cName == _EMPTY_ && action == ActionUpdate {
-		NewJSConsumerDoesNotExistError()
+	if action == ActionUpdate {
+		mset.mu.Unlock()
+		return nil, NewJSConsumerDoesNotExistError()
 	}
 
 	// Check for any limits, if the config for the consumer sets a limit we check against that

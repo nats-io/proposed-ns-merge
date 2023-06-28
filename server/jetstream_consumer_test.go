@@ -513,7 +513,7 @@ func TestJetStreamConsumerActions(t *testing.T) {
 		DeliverPolicy:  DeliverAll,
 		AckWait:        time.Second * 30,
 	}, ActionUpdate)
-	require_NoError(t, err)
+	require_Error(t, err)
 }
 
 func TestConsumerActionsUnmarshal(t *testing.T) {
@@ -523,7 +523,7 @@ func TestConsumerActionsUnmarshal(t *testing.T) {
 		expected  ConsumerAction
 		expectErr bool
 	}{
-		{name: "action creat", given: []byte(`{"action": "create"}`), expected: ActionCreate},
+		{name: "action create", given: []byte(`{"action": "create"}`), expected: ActionCreate},
 		{name: "action update", given: []byte(`{"action": "update"}`), expected: ActionUpdate},
 		{name: "no action", given: []byte("{}"), expected: ActionCreateOrUpdate},
 		{name: "unknown", given: []byte(`{"action": "unknown"}`), expected: ActionCreateOrUpdate, expectErr: true},
