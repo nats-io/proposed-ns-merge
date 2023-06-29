@@ -88,6 +88,9 @@ type ConnzOptions struct {
 
 	// Filter by subject interest
 	FilterSubject string `json:"filter_subject"`
+
+	// Filter by connection kind
+	Kind string `json:"kind"`
 }
 
 // ConnState is for filtering states of connections. We will only have two, open and closed.
@@ -100,6 +103,17 @@ const (
 	ConnClosed
 	// ConnAll returns all clients.
 	ConnAll
+)
+
+const (
+	// ConnKindAll returns connections of all client kinds.
+	ConnKindAll = _EMPTY_
+
+	// ConnKind returns connections that are normal clients.
+	ConnKindClient = "Client"
+
+	// ConnKindLeafNode returns connection that are leaf nodes.
+	ConnKindLeafNode = "Leafnode"
 )
 
 // ConnInfo has detailed information on a per connection basis.
@@ -189,6 +203,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		a       *Account
 		filter  string
 		mqttCID string
+		kind    string
 	)
 
 	if opts != nil {
@@ -218,6 +233,8 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		}
 		// state
 		state = opts.State
+
+		kind = opts.Kind
 
 		// ByStop only makes sense on closed connections
 		if sortOpt == ByStop && state != ConnClosed {
@@ -363,6 +380,12 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 				if mqttCID != _EMPTY_ && client.getMQTTClientID() != mqttCID {
 					continue
 				}
+
+				// Do client kind filtering
+				if kind != _EMPTY_ && client.kindString() != kind {
+					continue
+				}
+
 				openClients = append(openClients, client)
 			}
 		}
@@ -706,6 +729,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 	user := r.URL.Query().Get("user")
 	acc := r.URL.Query().Get("acc")
 	mqttCID := r.URL.Query().Get("mqtt_client")
+	kind := r.URL.Query().Get("kind")
 
 	connzOpts := &ConnzOptions{
 		Sort:                sortOpt,
@@ -719,6 +743,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		State:               state,
 		User:                user,
 		Account:             acc,
+		Kind:                kind,
 	}
 
 	s.mu.Lock()
