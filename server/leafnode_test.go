@@ -5366,7 +5366,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 		sub, err := nc.QueueSubscribeSync("RESPONSE", "SA2")
 		require_NoError(t, err)
 		nc.Flush()
-		rsubs = append(rsubs2, sub)
+		rsubs2 = append(rsubs2, sub)
 	}
 
 	nc, _ = jsClientConnect(t, ln.randomServer())
@@ -5376,7 +5376,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 	nc.Flush()
 
 	// sub propogation
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 
 	// Now connect and send responses from EFG in cloud.
 	nc, _ = jsClientConnect(t, sc.randomServer(), nats.UserInfo("efg", "p"))
@@ -5404,6 +5404,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 		return fmt.Errorf("Not all responses received by SA2 DQ: %d vs %d", p, 100)
 	}
 
-	checkFor(t, time.Second, 200*time.Millisecond, checkAllRespReceived)
 	checkFor(t, time.Second, 200*time.Millisecond, checkAllRespReceived2)
+	checkFor(t, time.Second, 200*time.Millisecond, checkAllRespReceived)
+
 }
