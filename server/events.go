@@ -2679,6 +2679,10 @@ func (s *Server) nsubsRequest(sub *subscription, c *client, _ *Account, subject,
 	s.sendInternalMsgLocked(reply, _EMPTY_, nil, nsubs)
 }
 
+func (s *Server) kickClient(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
+
+}
+
 // Helper to grab account name for a client.
 func accForClient(c *client) string {
 	if c.acc != nil {
