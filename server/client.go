@@ -212,6 +212,7 @@ const (
 	DuplicateServerName
 	MinimumVersionRequired
 	ClusterNamesIdentical
+	Kicked
 )
 
 // Some flags passed to processMsgResults

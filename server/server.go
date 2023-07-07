@@ -4169,3 +4169,19 @@ func (s *Server) changeRateLimitLogInterval(d time.Duration) {
 	default:
 	}
 }
+
+// Disconnects a client by name
+func (s *Server) DisconnectClientByName(name string, reason ClosedState) {
+	for _, c := range s.clients {
+		if c.GetName() == name {
+			c.closeConnection(reason)
+			return
+		}
+	}
+}
+
+// Disconnects a client by cid
+func (s *Server) DisconnectClientByID(id uint64, reason ClosedState) {
+	client := s.clients[id]
+	client.closeConnection(reason)
+}
