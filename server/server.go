@@ -4170,17 +4170,41 @@ func (s *Server) changeRateLimitLogInterval(d time.Duration) {
 	}
 }
 
+// Disconnects a client by cid
+func (s *Server) DisconnectClientByID(id uint64) {
+	client := s.clients[id]
+	if client != nil {
+		client.closeConnection(Kicked)
+	}
+}
+
 // Disconnects a client by name
 func (s *Server) DisconnectClientsByName(name string) {
 	for _, c := range s.clients {
 		if c.GetName() == name {
-			c.closeConnection(Kicked)
+			s.DisconnectClientByID(c.cid)
 		}
 	}
 }
 
-// Disconnects a client by cid
-func (s *Server) DisconnectClientByID(id uint64) {
-	client := s.clients[id]
-	client.closeConnection(Kicked)
+func (s *Server) LDMClientByID(id uint64) {
+	info := s.copyInfo()
+	info.LameDuckMode = true
+
+	c := s.clients[id]
+	if c != nil && c.opts.Protocol >= ClientProtoInfo &&
+		c.flags.isSet(firstPongSent) {
+		// sendInfo takes care of checking if the connection is still
+		// valid or not, so don't duplicate tests here.
+		s.Debugf("sending LDM info to cid=%d", id)
+		c.enqueueProto(c.generateClientInfoJSON(info))
+	}
+}
+
+func (s *Server) LDMClientsByName(name string) {
+	for _, c := range s.clients {
+		if c.GetName() == name {
+			s.LDMClientByID(c.cid)
+		}
+	}
 }

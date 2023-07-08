@@ -55,6 +55,7 @@ const (
 	accConnsEventSubjOld      = "$SYS.SERVER.ACCOUNT.%s.CONNS" // kept for backward compatibility
 	shutdownEventSubj         = "$SYS.SERVER.%s.SHUTDOWN"
 	clientKickReqSubj         = "$SYS.REQ.SERVER.%s.KICK"
+	clientLDMReqSubj          = "$SYS.REQ.SERVER.%s.LDM"
 	authErrorEventSubj        = "$SYS.SERVER.%s.CLIENT.AUTH.ERR"
 	authErrorAccountEventSubj = "$SYS.ACCOUNT.CLIENT.AUTH.ERR"
 	serverStatsSubj           = "$SYS.SERVER.%s.STATSZ"
@@ -1212,6 +1213,11 @@ func (s *Server) initEventTracking() {
 	subject = fmt.Sprintf(clientKickReqSubj, s.info.ID)
 	if _, err := s.sysSubscribe(subject, s.noInlineCallback(s.kickClient)); err != nil {
 		s.Errorf("Error setting up client kick service: %v", err)
+	}
+	// Client connection LDM
+	subject = fmt.Sprintf(clientLDMReqSubj, s.info.ID)
+	if _, err := s.sysSubscribe(subject, s.noInlineCallback(s.ldmClient)); err != nil {
+		s.Errorf("Error setting up client LDM service: %v", err)
 	}
 }
 
@@ -2690,6 +2696,11 @@ type kickClientReq struct {
 	Id   uint64 `json:"id"`
 }
 
+type ldmClientReq struct {
+	Name string `json:"name"`
+	Id   uint64 `json:"id"`
+}
+
 func (s *Server) kickClient(_ *subscription, _ *client, _ *Account, subject, reply string, hdr, msg []byte) {
 	var req kickClientReq
 	if err := json.Unmarshal(msg, &req); err != nil {
@@ -2700,6 +2711,19 @@ func (s *Server) kickClient(_ *subscription, _ *client, _ *Account, subject, rep
 		s.DisconnectClientByID(req.Id)
 	} else if req.Name != _EMPTY_ {
 		s.DisconnectClientsByName(req.Name)
+	}
+}
+
+func (s *Server) ldmClient(_ *subscription, _ *client, _ *Account, subject, reply string, hdr, msg []byte) {
+	var req ldmClientReq
+	if err := json.Unmarshal(msg, &req); err != nil {
+		s.sys.client.Errorf("Error unmarshalling kick client request: %v", err)
+		return
+	}
+	if req.Id != 0 {
+		s.LDMClientByID(req.Id)
+	} else if req.Name != _EMPTY_ {
+		s.LDMClientsByName(req.Name)
 	}
 }
 
