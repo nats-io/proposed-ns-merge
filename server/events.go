@@ -54,6 +54,7 @@ const (
 	accConnsEventSubjNew      = "$SYS.ACCOUNT.%s.SERVER.CONNS"
 	accConnsEventSubjOld      = "$SYS.SERVER.ACCOUNT.%s.CONNS" // kept for backward compatibility
 	shutdownEventSubj         = "$SYS.SERVER.%s.SHUTDOWN"
+	clientKickReqSubj         = "$SYS.REQ.SERVER.%s.KICK"
 	authErrorEventSubj        = "$SYS.SERVER.%s.CLIENT.AUTH.ERR"
 	authErrorAccountEventSubj = "$SYS.ACCOUNT.CLIENT.AUTH.ERR"
 	serverStatsSubj           = "$SYS.SERVER.%s.STATSZ"
@@ -1206,6 +1207,11 @@ func (s *Server) initEventTracking() {
 	// This is for simple debugging of number of subscribers that exist in the system.
 	if _, err := s.sysSubscribeInternal(accSubsSubj, s.noInlineCallback(s.debugSubscribers)); err != nil {
 		s.Errorf("Error setting up internal debug service for subscribers: %v", err)
+	}
+	// Client connection kick
+	subject = fmt.Sprintf(clientKickReqSubj, s.info.ID)
+	if _, err := s.sysSubscribe(subject, s.noInlineCallback(s.kickClient)); err != nil {
+		s.Errorf("Error setting up client kick service: %v", err)
 	}
 }
 
@@ -2679,8 +2685,22 @@ func (s *Server) nsubsRequest(sub *subscription, c *client, _ *Account, subject,
 	s.sendInternalMsgLocked(reply, _EMPTY_, nil, nsubs)
 }
 
-func (s *Server) kickClient(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
+type kickClientReq struct {
+	Name string `json:"name"`
+	Id   uint64 `json:"id"`
+}
 
+func (s *Server) kickClient(_ *subscription, _ *client, _ *Account, subject, reply string, hdr, msg []byte) {
+	var req kickClientReq
+	if err := json.Unmarshal(msg, &req); err != nil {
+		s.sys.client.Errorf("Error unmarshalling kick client request: %v", err)
+		return
+	}
+	if req.Id != 0 {
+		s.DisconnectClientByID(req.Id)
+	} else if req.Name != _EMPTY_ {
+		s.DisconnectClientsByName(req.Name)
+	}
 }
 
 // Helper to grab account name for a client.
