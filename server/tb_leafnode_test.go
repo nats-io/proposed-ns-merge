@@ -942,7 +942,7 @@ func TestLeafNodeMCConfigDownlinkOnly2Remotes(t *testing.T) {
 	}
 }
 
-func TestLeafNodeMCConfigDownlinkOnly2RemotesOneLeafAcct(t *testing.T) {
+func TestLeafNodeMCConfigDownlinkOnlyOneLeafAcctRandom(t *testing.T) {
 	var tmpl = `
 	listen: 127.0.0.1:-1
 
@@ -1170,7 +1170,7 @@ func TestLeafNodeMCConfigDownlinkOnly2RemotesOneLeafAcct(t *testing.T) {
 }
 
 // This test always passes as we spread leaf subscribers to their own spoke node
-func TestLeafNodeMCConfigDownlinkOnly2RemotesOneLeafAcctAlwaysSpread(t *testing.T) {
+func TestLeafNodeMCConfigDownlinkOnlyOneLeafAcctAlwaysSpread(t *testing.T) {
 	var tmpl = `
 	listen: 127.0.0.1:-1
 
@@ -1308,6 +1308,7 @@ func TestLeafNodeMCConfigDownlinkOnly2RemotesOneLeafAcctAlwaysSpread(t *testing.
 	// Create Spoke subscribers.
 	var rsubs []*nats.Subscription
 
+	// Spread SA subscribers
 	for _, srv := range ln.servers {
 		nc, _ := jsClientConnect(t, srv)
 		defer nc.Close()
@@ -1320,6 +1321,7 @@ func TestLeafNodeMCConfigDownlinkOnly2RemotesOneLeafAcctAlwaysSpread(t *testing.
 	// Create a second unique DQ with 10 additional subscribers.
 	var rsubs2 = []*nats.Subscription{}
 
+	// Spread SA2 subscribers
 	for _, srv := range ln.servers {
 		nc, _ := jsClientConnect(t, srv)
 		defer nc.Close()
@@ -1365,12 +1367,12 @@ func TestLeafNodeMCConfigDownlinkOnly2RemotesOneLeafAcctAlwaysSpread(t *testing.
 	checkFor(t, time.Second, 200*time.Millisecond, checkAllRespReceived)
 
 	time.Sleep(2 * time.Second)
-	println("State of KSC+STL clusters")
+	// println("State of KSC+STL clusters")
 	for _, c := range sc.clusters {
 		_ = doSnapSubzForSubjectOnCluster(c, "RESPONSE", []string{"KSC", "STL", "EFG"}, true)
 	}
 
-	println("State of SA cluster")
+	// println("State of SA cluster")
 	_ = doSnapSubzForSubjectOnCluster(ln, "RESPONSE", []string{"$G"}, true)
 
 	// Now remove all the subscriptions and re-check sub propogration state
@@ -1391,14 +1393,14 @@ func TestLeafNodeMCConfigDownlinkOnly2RemotesOneLeafAcctAlwaysSpread(t *testing.
 	}
 
 	// println("FINAL State of SA cluster")
-	cSnap = doSnapSubzForSubjectOnCluster(ln, "RESPONSE", []string{"$G"}, false)
+	cSnap = doSnapSubzForSubjectOnCluster(ln, "RESPONSE", []string{"$G"}, true)
 	for _, snap := range cSnap {
 		require_True(t, !snapSubsExist(snap))
 	}
 }
 
 // This test always fails as we pin leaf subscribers to a spoke node
-func TestLeafNodeMCConfigDownlinkOnly2RemotesOneLeafAcctNeverSpread(t *testing.T) {
+func TestLeafNodeMCConfigDownlinkOnlyOneLeafAcctNeverSpread(t *testing.T) {
 	var tmpl = `
 	listen: 127.0.0.1:-1
 
@@ -1537,6 +1539,7 @@ func TestLeafNodeMCConfigDownlinkOnly2RemotesOneLeafAcctNeverSpread(t *testing.T
 	var rsubs []*nats.Subscription
 
 	srv := ln.randomServer()
+	// Do not spread SA subscribers, all on same node (srv)
 	for i := 0; i < 3; i++ {
 		nc, _ := jsClientConnect(t, srv)
 		defer nc.Close()
@@ -1595,12 +1598,12 @@ func TestLeafNodeMCConfigDownlinkOnly2RemotesOneLeafAcctNeverSpread(t *testing.T
 	checkFor(t, time.Second, 200*time.Millisecond, checkAllRespReceived)
 
 	time.Sleep(2 * time.Second)
-	println("State of KSC+STL clusters")
+	// println("State of KSC+STL clusters")
 	for _, c := range sc.clusters {
 		_ = doSnapSubzForSubjectOnCluster(c, "RESPONSE", []string{"KSC", "STL", "EFG"}, true)
 	}
 
-	println("State of SA cluster")
+	// println("State of SA cluster")
 	_ = doSnapSubzForSubjectOnCluster(ln, "RESPONSE", []string{"$G"}, true)
 
 	// Now remove all the subscriptions and re-check sub propogration state
@@ -1625,4 +1628,551 @@ func TestLeafNodeMCConfigDownlinkOnly2RemotesOneLeafAcctNeverSpread(t *testing.T
 	for _, snap := range cSnap {
 		require_True(t, !snapSubsExist(snap))
 	}
+}
+
+// This test always fails as we pin leaf subscribers to a spoke node
+func TestLeafNodeMCConfigDownlinkOnlyOneLeafAcctNeverSpreadRepeat(t *testing.T) {
+	var tmpl = `
+	listen: 127.0.0.1:-1
+
+	server_name: %s
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+	leaf { listen: 127.0.0.1:-1 }
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	accounts {
+		EFG {
+			users = [ { user: "efg", pass: "p" } ]
+			jetstream: enabled
+			imports [
+				{ stream: { account: STL, subject: "REQUEST"} }
+				{ stream: { account: KSC, subject: "REQUEST"} }
+			]
+			exports [ { stream: "RESPONSE" } ]
+		}
+		STL {
+			users = [ { user: "stl", pass: "p" } ]
+			exports [ { stream: "REQUEST" } ]
+			imports [ { stream: { account: EFG, subject: "RESPONSE"} } ]
+		}
+		KSC {
+			users = [ { user: "ksc", pass: "p" } ]
+			exports [ { stream: "REQUEST" } ]
+			imports [ { stream: { account: EFG, subject: "RESPONSE"} } ]
+		}
+		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+	}`
+
+	sc := createJetStreamSuperClusterWithTemplate(t, tmpl, 5, 2)
+	defer sc.shutdown()
+
+	// Now create a leafnode cluster that has 2 LNs, one to each cluster but on separate accounts, ONE and TWO.
+	var lnTmpl = `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+		{{leaf}}
+
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }}
+		`
+
+	var leafFrag = `
+		leaf {
+			listen: 127.0.0.1:-1
+			remotes [
+				{ urls: [ %s ] }
+			]
+		}`
+
+	// We want to have two leaf node connections that join to the same local account on the leafnode servers,
+	// but connect to different accounts in different clusters.
+	c1 := sc.clusters[0] // Will connect to account KSC
+	c2 := sc.clusters[1] // Will connect to account STL
+
+	genLeafTmpl := func(tmpl string) string {
+		t.Helper()
+
+		var ln1 []string
+		for _, s := range c1.servers {
+			if s.ClusterName() != c1.name {
+				continue
+			}
+			ln := s.getOpts().LeafNode
+			ln1 = append(ln1, fmt.Sprintf("nats://ksc:p@%s:%d", ln.Host, ln.Port))
+		}
+
+		// Only have SA cluster nodes leaf connect to KSC cluster as ksc user.
+		return strings.Replace(tmpl, "{{leaf}}", fmt.Sprintf(leafFrag, strings.Join(ln1, ", ")), 1)
+	}
+
+	tmpl = strings.Replace(lnTmpl, "store_dir:", fmt.Sprintf(`domain: "%s", store_dir:`, "SA"), 1)
+	tmpl = genLeafTmpl(tmpl)
+
+	ln := createJetStreamCluster(t, tmpl, "SA", "SA-", 3, 22280, false)
+	ln.waitOnClusterReady()
+	defer ln.shutdown()
+
+	for _, s := range ln.servers {
+		checkLeafNodeConnectedCount(t, s, 1)
+	}
+
+	// Now connect DQ subscribers to each cluster but to the global account.
+
+	// Create 5 clients for each cluster / account
+	var c1c, c2c []*nats.Conn
+	for i := 0; i < 5; i++ {
+		nc1, _ := jsClientConnect(t, c1.randomServer(), nats.UserInfo("efg", "p"))
+		defer nc1.Close()
+		c1c = append(c1c, nc1)
+		nc2, _ := jsClientConnect(t, c2.randomServer(), nats.UserInfo("efg", "p"))
+		defer nc2.Close()
+		c2c = append(c2c, nc2)
+	}
+
+	pending := func(subs []*nats.Subscription) (total int) {
+		t.Helper()
+		for _, sub := range subs {
+			n, _, err := sub.Pending()
+			require_NoError(t, err)
+			total += n
+		}
+		return total
+	}
+
+	// Make sure no subs to start test
+	for _, c := range sc.clusters {
+		cSnap := doSnapSubzForSubjectOnCluster(c, "RESPONSE", []string{"KSC", "STL", "EFG"}, false)
+		require_True(t, cSnap != nil && len(cSnap) != 0)
+		for _, snap := range cSnap {
+			require_True(t, snap != nil && !snapSubsExist(snap))
+		}
+	}
+	cSnap := doSnapSubzForSubjectOnCluster(ln, "RESPONSE", []string{"$G"}, false)
+	require_True(t, cSnap != nil && len(cSnap) != 0)
+	for _, snap := range cSnap {
+		require_True(t, snap != nil && !snapSubsExist(snap))
+	}
+
+	// Create Spoke subscribers.
+	var rsubs []*nats.Subscription
+	var rncs []*nats.Conn
+	// Create a second unique DQ to test for any cross-talk (not seeing so far).
+	var rsubs2 = []*nats.Subscription{}
+	var rncs2 = []*nats.Conn{}
+
+	var spokeSubNow = func(sindex int) {
+		// NeverSpread
+		rsubs = nil
+		srv := ln.servers[sindex]
+		for i := 0; i < 5; i++ {
+			nc, _ := jsClientConnect(t, srv)
+			// defer nc.Close()
+			rncs = append(rncs, nc)
+			sub, err := nc.QueueSubscribeSync("RESPONSE", "SA")
+			require_NoError(t, err)
+			nc.Flush()
+			rsubs = append(rsubs, sub)
+		}
+
+		// we will spread SA2 so it doesn't contribute to fail
+		rsubs2 = nil
+		for _, srv := range ln.servers {
+			nc, _ := jsClientConnect(t, srv)
+			// defer nc.Close()
+			rncs2 = append(rncs2, nc)
+			sub, err := nc.QueueSubscribeSync("RESPONSE", "SA2")
+			require_NoError(t, err)
+			nc.Flush()
+			rsubs2 = append(rsubs2, sub)
+		}
+
+		// sub propogation
+		time.Sleep(1 * time.Second)
+	}
+
+	var spokeUnsubNow = func() {
+		// Now remove all the subscriptions and re-check sub propogration state
+		for _, sub := range rsubs {
+			sub.Unsubscribe()
+		}
+		for _, sub := range rsubs2 {
+			sub.Unsubscribe()
+		}
+	}
+
+	var _ = func() {
+		// Now remove all the subscriptions and re-check sub propogration state
+		for _, nc := range rncs {
+			nc.Close()
+		}
+		for _, nc := range rncs2 {
+			nc.Close()
+		}
+	}
+
+	var doHubPubsNow = func() {
+		// Now connect and send responses from EFG in cloud.
+		rando := sc.randomServer()
+		// println("RESPONSE publisher rando is", rando.Name())
+		nc, _ := jsClientConnect(t, rando, nats.UserInfo("efg", "p"))
+		defer nc.Close()
+
+		for i := 0; i < 100; i++ {
+			require_NoError(t, nc.Publish("RESPONSE", []byte("OK")))
+		}
+		nc.Flush()
+	}
+
+	checkAllRespReceived := func() error {
+		p := pending(rsubs)
+		if p == 100 {
+			t.Logf("All responses received by SA DQ [%d]", p)
+			return nil
+		}
+		return fmt.Errorf("Not all responses received by SA DQ: %d vs %d", p, 100)
+	}
+
+	checkAllRespReceived2 := func() error {
+		p := pending(rsubs2)
+		if p == 100 {
+			t.Logf("All responses received by SA2 DQ [%d]", p)
+			return nil
+		}
+		return fmt.Errorf("Not all responses received by SA2 DQ: %d vs %d", p, 100)
+	}
+
+	// Let's subcribe-pub-check-unsub more than once to see if it fails after first time success...
+	// Do up to three times to select different spoke server each round
+	for test := 0; test < 3; test++ {
+		println("Test", test, "Spoke server:", ln.servers[test].Name())
+		spokeSubNow(test)
+		doHubPubsNow()
+		checkFor(t, time.Second, 200*time.Millisecond, checkAllRespReceived2)
+		checkFor(t, time.Second, 200*time.Millisecond, checkAllRespReceived)
+
+		time.Sleep(2 * time.Second)
+		//println("State of KSC+STL clusters")
+		//for _, c := range sc.clusters {
+		//	_ = doSnapSubzForSubjectOnCluster(c, "RESPONSE", []string{"KSC", "STL", "EFG"}, true)
+		//}
+		//
+		//println("State of SA cluster")
+		//_ = doSnapSubzForSubjectOnCluster(ln, "RESPONSE", []string{"$G"}, true)
+
+		// See if any difference in UNSUB if by closed connections at spoke
+		// spokeClientDisconnNow()
+		spokeUnsubNow()
+	}
+	// Temporarily remove the complete unsub check because we know it fails. This test will see if we can make publish
+	// fail with multiple iterations of incomplete unsub at HUB, such as phantom EFG sub directly traffic to leaf
+	// connection with no actual client sub...
+	time.Sleep(4 * time.Second)
+	// println("FINAL State of KSC+STL clusters")
+	for _, c := range sc.clusters {
+		cSnap := doSnapSubzForSubjectOnCluster(c, "RESPONSE", []string{"KSC", "STL", "EFG"}, true)
+		for _, snap := range cSnap {
+			require_True(t, !snapSubsExist(snap))
+		}
+	}
+
+	// println("FINAL State of SA cluster")
+	cSnap = doSnapSubzForSubjectOnCluster(ln, "RESPONSE", []string{"$G"}, false)
+	for _, snap := range cSnap {
+		require_True(t, !snapSubsExist(snap))
+	}
+
+	// Clean up our test for closes that weren't deferred to test return
+	// spokeClientDisconnNow()
+}
+
+// STL and KSC leaf remotes; This test always fails as we pin leaf subscribers to a spoke node
+func TestLeafNodeMCConfigDownlinkOnlyTwoLeafAcctNeverSpreadRepeat(t *testing.T) {
+	var tmpl = `
+	listen: 127.0.0.1:-1
+
+	server_name: %s
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+	leaf { listen: 127.0.0.1:-1 }
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	accounts {
+		EFG {
+			users = [ { user: "efg", pass: "p" } ]
+			jetstream: enabled
+			imports [
+				{ stream: { account: STL, subject: "REQUEST"} }
+				{ stream: { account: KSC, subject: "REQUEST"} }
+			]
+			exports [ { stream: "RESPONSE" } ]
+		}
+		STL {
+			users = [ { user: "stl", pass: "p" } ]
+			exports [ { stream: "REQUEST" } ]
+			imports [ { stream: { account: EFG, subject: "RESPONSE"} } ]
+		}
+		KSC {
+			users = [ { user: "ksc", pass: "p" } ]
+			exports [ { stream: "REQUEST" } ]
+			imports [ { stream: { account: EFG, subject: "RESPONSE"} } ]
+		}
+		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+	}`
+
+	sc := createJetStreamSuperClusterWithTemplate(t, tmpl, 3, 2)
+	defer sc.shutdown()
+
+	// Now create a leafnode cluster that has 2 LNs, one to each cluster but on separate accounts, ONE and TWO.
+	var lnTmpl = `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+		{{leaf}}
+
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }}
+		`
+
+	var leafFrag = `
+		leaf {
+			listen: 127.0.0.1:-1
+			remotes [
+				{ urls: [ %s ] }
+				{ urls: [ %s ] }
+			]
+		}`
+
+	// We want to have two leaf node connections that join to the same local account on the leafnode servers,
+	// but connect to different accounts in different clusters.
+	c1 := sc.clusters[0] // Will connect to account KSC
+	c2 := sc.clusters[1] // Will connect to account STL
+
+	genLeafTmpl := func(tmpl string) string {
+		t.Helper()
+
+		var ln1, ln2 []string
+		for _, s := range c1.servers {
+			if s.ClusterName() != c1.name {
+				continue
+			}
+			ln := s.getOpts().LeafNode
+			ln1 = append(ln1, fmt.Sprintf("nats://ksc:p@%s:%d", ln.Host, ln.Port))
+		}
+
+		for _, s := range c2.servers {
+			if s.ClusterName() != c2.name {
+				continue
+			}
+			ln := s.getOpts().LeafNode
+			ln2 = append(ln2, fmt.Sprintf("nats://stl:p@%s:%d", ln.Host, ln.Port))
+		}
+
+		// Only have SA cluster nodes leaf connect to KSC cluster as ksc user.
+		return strings.Replace(tmpl, "{{leaf}}", fmt.Sprintf(leafFrag, strings.Join(ln1, ", "), strings.Join(ln2, ", ")), 1)
+	}
+
+	tmpl = strings.Replace(lnTmpl, "store_dir:", fmt.Sprintf(`domain: "%s", store_dir:`, "SA"), 1)
+	tmpl = genLeafTmpl(tmpl)
+
+	ln := createJetStreamCluster(t, tmpl, "SA", "SA-", 5, 22280, false)
+	ln.waitOnClusterReady()
+	defer ln.shutdown()
+
+	for _, s := range ln.servers {
+		checkLeafNodeConnectedCount(t, s, 2)
+	}
+
+	// Now connect DQ subscribers to each cluster but to the global account.
+
+	// Create 5 clients for each cluster / account
+	var c1c, c2c []*nats.Conn
+	for i := 0; i < 5; i++ {
+		nc1, _ := jsClientConnect(t, c1.randomServer(), nats.UserInfo("efg", "p"))
+		defer nc1.Close()
+		c1c = append(c1c, nc1)
+		nc2, _ := jsClientConnect(t, c2.randomServer(), nats.UserInfo("efg", "p"))
+		defer nc2.Close()
+		c2c = append(c2c, nc2)
+	}
+
+	pending := func(subs []*nats.Subscription) (total int) {
+		t.Helper()
+		for _, sub := range subs {
+			n, _, err := sub.Pending()
+			require_NoError(t, err)
+			total += n
+		}
+		return total
+	}
+
+	// Make sure no subs to start test
+	for _, c := range sc.clusters {
+		cSnap := doSnapSubzForSubjectOnCluster(c, "RESPONSE", []string{"KSC", "STL", "EFG"}, false)
+		require_True(t, cSnap != nil && len(cSnap) != 0)
+		for _, snap := range cSnap {
+			require_True(t, snap != nil && !snapSubsExist(snap))
+		}
+	}
+	cSnap := doSnapSubzForSubjectOnCluster(ln, "RESPONSE", []string{"$G"}, false)
+	require_True(t, cSnap != nil && len(cSnap) != 0)
+	for _, snap := range cSnap {
+		require_True(t, snap != nil && !snapSubsExist(snap))
+	}
+
+	// Create Spoke subscribers.
+	var rsubs []*nats.Subscription
+	var rncs []*nats.Conn
+	// Create a second unique DQ to test for any cross-talk (not seeing so far).
+	var rsubs2 = []*nats.Subscription{}
+	var rncs2 = []*nats.Conn{}
+
+	var spokeSubNow = func(sindex int) {
+		// NeverSpread
+		rsubs = nil
+		srv := ln.servers[sindex]
+		for i := 0; i < 3; i++ {
+			nc, _ := jsClientConnect(t, srv)
+			// defer nc.Close()
+			rncs = append(rncs, nc)
+			sub, err := nc.QueueSubscribeSync("RESPONSE", "SA")
+			require_NoError(t, err)
+			nc.Flush()
+			rsubs = append(rsubs, sub)
+		}
+
+		// we will spread SA2 so it doesn't contribute to fail
+		rsubs2 = nil
+		for _, srv := range ln.servers {
+			nc, _ := jsClientConnect(t, srv)
+			// defer nc.Close()
+			rncs2 = append(rncs2, nc)
+			sub, err := nc.QueueSubscribeSync("RESPONSE", "SA2")
+			require_NoError(t, err)
+			nc.Flush()
+			rsubs2 = append(rsubs2, sub)
+		}
+
+		// sub propogation
+		time.Sleep(1 * time.Second)
+	}
+
+	var spokeUnsubNow = func() {
+		// Now remove all the subscriptions and re-check sub propogration state
+		for _, sub := range rsubs {
+			sub.Unsubscribe()
+		}
+		for _, sub := range rsubs2 {
+			sub.Unsubscribe()
+		}
+	}
+
+	var _ = func() {
+		// Now remove all the subscriptions and re-check sub propogration state
+		for _, nc := range rncs {
+			nc.Close()
+		}
+		for _, nc := range rncs2 {
+			nc.Close()
+		}
+	}
+
+	var doHubPubsNow = func() {
+		// Now connect and send responses from EFG in cloud.
+		rando := sc.randomServer()
+		// println("RESPONSE publisher rando is", rando.Name())
+		nc, _ := jsClientConnect(t, rando, nats.UserInfo("efg", "p"))
+		defer nc.Close()
+
+		for i := 0; i < 100; i++ {
+			require_NoError(t, nc.Publish("RESPONSE", []byte("OK")))
+		}
+		nc.Flush()
+	}
+
+	checkAllRespReceived := func() error {
+		p := pending(rsubs)
+		if p == 100 {
+			t.Logf("All responses received by SA DQ [%d]", p)
+			return nil
+		}
+		return fmt.Errorf("Not all responses received by SA DQ: %d vs %d", p, 100)
+	}
+
+	checkAllRespReceived2 := func() error {
+		p := pending(rsubs2)
+		if p == 100 {
+			t.Logf("All responses received by SA2 DQ [%d]", p)
+			return nil
+		}
+		return fmt.Errorf("Not all responses received by SA2 DQ: %d vs %d", p, 100)
+	}
+
+	// Let's subcribe-pub-check-unsub more than once to see if it fails after first time success...
+	// Do up to three times to select different spoke server each round
+	for test := 0; test < 5; test++ {
+		println("Test", test, "Spoke server:", ln.servers[test].Name())
+		spokeSubNow(test)
+		doHubPubsNow()
+		checkFor(t, time.Second, 200*time.Millisecond, checkAllRespReceived2)
+		checkFor(t, time.Second, 200*time.Millisecond, checkAllRespReceived)
+
+		time.Sleep(2 * time.Second)
+		//println("State of KSC+STL clusters")
+		//for _, c := range sc.clusters {
+		//	_ = doSnapSubzForSubjectOnCluster(c, "RESPONSE", []string{"KSC", "STL", "EFG"}, true)
+		//}
+		//
+		//println("State of SA cluster")
+		//_ = doSnapSubzForSubjectOnCluster(ln, "RESPONSE", []string{"$G"}, true)
+
+		// See if any difference in UNSUB if by closed connections at spoke
+		// spokeClientDisconnNow()
+		spokeUnsubNow()
+	}
+	// Temporarily remove the complete unsub check because we know it fails. This test will see if we can make publish
+	// fail with multiple iterations of incomplete unsub at HUB, such as phantom EFG sub directly traffic to leaf
+	// connection with no actual client sub...
+	time.Sleep(4 * time.Second)
+	for _, c := range sc.clusters {
+		_ = doSnapSubzForSubjectOnCluster(c, "RESPONSE", []string{"KSC", "STL", "EFG"}, true)
+	}
+	for _, c := range sc.clusters {
+		cSnap := doSnapSubzForSubjectOnCluster(c, "RESPONSE", []string{"KSC", "STL", "EFG"}, false)
+		for _, snap := range cSnap {
+			require_True(t, !snapSubsExist(snap))
+		}
+	}
+
+	// println("FINAL State of SA cluster")
+	cSnap = doSnapSubzForSubjectOnCluster(ln, "RESPONSE", []string{"$G"}, false)
+	for _, snap := range cSnap {
+		require_True(t, !snapSubsExist(snap))
+	}
+
+	// Clean up our test for closes that weren't deferred to test return
+	// spokeClientDisconnNow()
 }
