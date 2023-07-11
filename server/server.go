@@ -21,12 +21,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"math/rand"
 	"net"
 	"net/http"
 	"regexp"
+	"runtime/pprof"
 
 	// Allow dynamic profiling.
 	_ "net/http/pprof"
@@ -40,6 +42,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
@@ -83,6 +86,7 @@ type Info struct {
 	ClientConnectURLs []string `json:"connect_urls,omitempty"`    // Contains URLs a client can connect to.
 	WSConnectURLs     []string `json:"ws_connect_urls,omitempty"` // Contains URLs a ws client can connect to.
 	LameDuckMode      bool     `json:"ldm,omitempty"`
+	Compression       string   `json:"compression,omitempty"`
 
 	// Route Specific
 	Import        *SubjectPermission `json:"import,omitempty"`
@@ -90,6 +94,10 @@ type Info struct {
 	LNOC          bool               `json:"lnoc,omitempty"`
 	InfoOnConnect bool               `json:"info_on_connect,omitempty"` // When true the server will respond to CONNECT with an INFO
 	ConnectInfo   bool               `json:"connect_info,omitempty"`    // When true this is the server INFO response to CONNECT
+	RoutePoolSize int                `json:"route_pool_size,omitempty"`
+	RoutePoolIdx  int                `json:"route_pool_idx,omitempty"`
+	RouteAccount  string             `json:"route_account,omitempty"`
+	RouteAccReqID string             `json:"route_acc_add_reqid,omitempty"`
 
 	// Gateways Specific
 	Gateway           string   `json:"gateway,omitempty"`             // Name of the origin Gateway (sent by gateway's INFO)
@@ -103,6 +111,8 @@ type Info struct {
 	// LeafNode Specific
 	LeafNodeURLs  []string `json:"leafnode_urls,omitempty"`  // LeafNode URLs that the server can reconnect to.
 	RemoteAccount string   `json:"remote_account,omitempty"` // Lets the other side know the remote account that they bind to.
+
+	XKey string `json:"xkey,omitempty"` // Public server's x25519 key.
 }
 
 // Server is our main struct.
@@ -114,6 +124,8 @@ type Server struct {
 	stats
 	mu                  sync.RWMutex
 	kp                  nkeys.KeyPair
+	xkp                 nkeys.KeyPair
+	xpub                string
 	info                Info
 	configFile          string
 	optsMu              sync.RWMutex
@@ -130,9 +142,14 @@ type Server struct {
 	activeAccounts      int32
 	accResolver         AccountResolver
 	clients             map[uint64]*client
-	routes              map[uint64]*client
-	routesByHash        sync.Map
-	remotes             map[string]*client
+	routes              map[string][]*client
+	routesPoolSize      int                           // Configured pool size
+	routesReject        bool                          // During reload, we may want to reject adding routes until some conditions are met
+	routesNoPool        int                           // Number of routes that don't use pooling (connecting to older server for instance)
+	accRoutes           map[string]map[string]*client // Key is account name, value is key=remoteID/value=route connection
+	accRouteByHash      sync.Map                      // Key is account name, value is nil or a pool index
+	accAddedCh          chan struct{}
+	accAddedReqID       string
 	leafs               map[uint64]*client
 	users               map[string]*User
 	nkeys               map[string]*NkeyUser
@@ -148,7 +165,6 @@ type Server struct {
 	routeListener       net.Listener
 	routeListenerErr    error
 	routeInfo           Info
-	routeInfoJSON       []byte
 	routeResolver       netResolver
 	routesToSelf        map[string]struct{}
 	routeTLSName        string
@@ -294,16 +310,17 @@ type Server struct {
 
 // For tracking JS nodes.
 type nodeInfo struct {
-	name    string
-	version string
-	cluster string
-	domain  string
-	id      string
-	tags    jwt.TagList
-	cfg     *JetStreamConfig
-	stats   *JetStreamStats
-	offline bool
-	js      bool
+	name            string
+	version         string
+	cluster         string
+	domain          string
+	id              string
+	tags            jwt.TagList
+	cfg             *JetStreamConfig
+	stats           *JetStreamStats
+	offline         bool
+	js              bool
+	binarySnapshots bool
 }
 
 // Make sure all are 64bits for atomic use
@@ -313,6 +330,243 @@ type stats struct {
 	inBytes       int64
 	outBytes      int64
 	slowConsumers int64
+}
+
+// This is used by tests so we can run all server tests with a default route
+// or leafnode compression mode. For instance:
+// go test -race -v ./server -cluster_compression=fast
+var (
+	testDefaultClusterCompression  string
+	testDefaultLeafNodeCompression string
+)
+
+// Compression modes.
+const (
+	CompressionNotSupported   = "not supported"
+	CompressionOff            = "off"
+	CompressionAccept         = "accept"
+	CompressionS2Auto         = "s2_auto"
+	CompressionS2Uncompressed = "s2_uncompressed"
+	CompressionS2Fast         = "s2_fast"
+	CompressionS2Better       = "s2_better"
+	CompressionS2Best         = "s2_best"
+)
+
+// defaultCompressionS2AutoRTTThresholds is the default of RTT thresholds for
+// the CompressionS2Auto mode.
+var defaultCompressionS2AutoRTTThresholds = []time.Duration{
+	// [0..10ms] -> CompressionS2Uncompressed
+	10 * time.Millisecond,
+	// ]10ms..50ms] -> CompressionS2Fast
+	50 * time.Millisecond,
+	// ]50ms..100ms] -> CompressionS2Better
+	100 * time.Millisecond,
+	// ]100ms..] -> CompressionS2Best
+}
+
+// For a given user provided string, matches to one of the compression mode
+// constant and updates the provided string to that constant. Returns an
+// error if the provided compression mode is not known.
+// The parameter `chosenModeForOn` indicates which compression mode to use
+// when the user selects "on" (or enabled, true, etc..). This is because
+// we may have different defaults depending on where the compression is used.
+func validateAndNormalizeCompressionOption(c *CompressionOpts, chosenModeForOn string) error {
+	if c == nil {
+		return nil
+	}
+	cmtl := strings.ToLower(c.Mode)
+	// First, check for the "on" case so that we set to the default compression
+	// mode for that. The other switch/case will finish setup if needed (for
+	// instance if the default mode is s2Auto).
+	switch cmtl {
+	case "on", "enabled", "true":
+		cmtl = chosenModeForOn
+	default:
+	}
+	// Check (again) with the proper mode.
+	switch cmtl {
+	case "not supported", "not_supported":
+		c.Mode = CompressionNotSupported
+	case "disabled", "off", "false":
+		c.Mode = CompressionOff
+	case "accept":
+		c.Mode = CompressionAccept
+	case "auto", "s2_auto":
+		var rtts []time.Duration
+		if len(c.RTTThresholds) == 0 {
+			rtts = defaultCompressionS2AutoRTTThresholds
+		} else {
+			for _, n := range c.RTTThresholds {
+				// Do not error on negative, but simply set to 0
+				if n < 0 {
+					n = 0
+				}
+				// Make sure they are properly ordered. However, it is possible
+				// to have a "0" anywhere in the list to indicate that this
+				// compression level should not be used.
+				if l := len(rtts); l > 0 && n != 0 {
+					for _, v := range rtts {
+						if n < v {
+							return fmt.Errorf("RTT threshold values %v should be in ascending order", c.RTTThresholds)
+						}
+					}
+				}
+				rtts = append(rtts, n)
+			}
+			if len(rtts) > 0 {
+				// Trim 0 that are at the end.
+				stop := -1
+				for i := len(rtts) - 1; i >= 0; i-- {
+					if rtts[i] != 0 {
+						stop = i
+						break
+					}
+				}
+				rtts = rtts[:stop+1]
+			}
+			if len(rtts) > 4 {
+				// There should be at most values for "uncompressed", "fast",
+				// "better" and "best" (when some 0 are present).
+				return fmt.Errorf("The compression mode %q should have no more than 4 RTT thresholds: %v", c.Mode, c.RTTThresholds)
+			} else if len(rtts) == 0 {
+				// But there should be at least 1 if the user provided the slice.
+				// We would be here only if it was provided by say with values
+				// being a single or all zeros.
+				return fmt.Errorf("The compression mode %q requires at least one RTT threshold", c.Mode)
+			}
+		}
+		c.Mode = CompressionS2Auto
+		c.RTTThresholds = rtts
+	case "fast", "s2_fast":
+		c.Mode = CompressionS2Fast
+	case "better", "s2_better":
+		c.Mode = CompressionS2Better
+	case "best", "s2_best":
+		c.Mode = CompressionS2Best
+	default:
+		return fmt.Errorf("Unsupported compression mode %q", c.Mode)
+	}
+	return nil
+}
+
+// Returns `true` if the compression mode `m` indicates that the server
+// will negotiate compression with the remote server, `false` otherwise.
+// Note that the provided compression mode is assumed to have been
+// normalized and validated.
+func needsCompression(m string) bool {
+	return m != _EMPTY_ && m != CompressionOff && m != CompressionNotSupported
+}
+
+// Compression is asymmetric, meaning that one side can have a different
+// compression level than the other. However, we need to check for cases
+// when this server `scm` or the remote `rcm` do not support compression
+// (say older server, or test to make it behave as it is not), or have
+// the compression off.
+// Note that `scm` is assumed to not be "off" or "not supported".
+func selectCompressionMode(scm, rcm string) (mode string, err error) {
+	if rcm == CompressionNotSupported || rcm == _EMPTY_ {
+		return CompressionNotSupported, nil
+	}
+	switch rcm {
+	case CompressionOff:
+		// If the remote explicitly disables compression, then we won't
+		// use compression.
+		return CompressionOff, nil
+	case CompressionAccept:
+		// If the remote is ok with compression (but is not initiating it),
+		// and if we too are in this mode, then it means no compression.
+		if scm == CompressionAccept {
+			return CompressionOff, nil
+		}
+		// Otherwise use our compression mode.
+		return scm, nil
+	case CompressionS2Auto, CompressionS2Uncompressed, CompressionS2Fast, CompressionS2Better, CompressionS2Best:
+		// This case is here to make sure that if we don't recognize a
+		// compression setting, we error out.
+		if scm == CompressionAccept {
+			// If our compression mode is "accept", then we will use the remote
+			// compression mode, except if it is "auto", in which case we will
+			// default to "fast". This is not a configuration (auto in one
+			// side and accept in the other) that would be recommended.
+			if rcm == CompressionS2Auto {
+				return CompressionS2Fast, nil
+			}
+			// Use their compression mode.
+			return rcm, nil
+		}
+		// Otherwise use our compression mode.
+		return scm, nil
+	default:
+		return _EMPTY_, fmt.Errorf("Unsupported route compression mode %q", rcm)
+	}
+}
+
+// If the configured compression mode is "auto" then will return that,
+// otherwise will return the given `cm` compression mode.
+func compressionModeForInfoProtocol(co *CompressionOpts, cm string) string {
+	if co.Mode == CompressionS2Auto {
+		return CompressionS2Auto
+	}
+	return cm
+}
+
+// Given a connection RTT and a list of thresholds durations, this
+// function will return an S2 compression level such as "uncompressed",
+// "fast", "better" or "best". For instance, with the following slice:
+// [5ms, 10ms, 15ms, 20ms], a RTT of up to 5ms will result
+// in the compression level "uncompressed", ]5ms..10ms] will result in
+// "fast" compression, etc..
+// However, the 0 value allows for disabling of some compression levels.
+// For instance, the following slice: [0, 0, 20, 30] means that a RTT of
+// [0..20ms] would result in the "better" compression - effectively disabling
+// the use of "uncompressed" and "fast", then anything above 20ms would
+// result in the use of "best" level (the 30 in the list has no effect
+// and the list could have been simplified to [0, 0, 20]).
+func selectS2AutoModeBasedOnRTT(rtt time.Duration, rttThresholds []time.Duration) string {
+	var idx int
+	var found bool
+	for i, d := range rttThresholds {
+		if rtt <= d {
+			idx = i
+			found = true
+			break
+		}
+	}
+	if !found {
+		// If we did not find but we have all levels, then use "best",
+		// otherwise use the last one in array.
+		if l := len(rttThresholds); l >= 3 {
+			idx = 3
+		} else {
+			idx = l - 1
+		}
+	}
+	switch idx {
+	case 0:
+		return CompressionS2Uncompressed
+	case 1:
+		return CompressionS2Fast
+	case 2:
+		return CompressionS2Better
+	}
+	return CompressionS2Best
+}
+
+// Returns an array of s2 WriterOption based on the route compression mode.
+// So far we return a single option, but this way we can call s2.NewWriter()
+// with a nil []s2.WriterOption, but not with a nil s2.WriterOption, so
+// this is more versatile.
+func s2WriterOptions(cm string) []s2.WriterOption {
+	switch cm {
+	case CompressionS2Uncompressed:
+		return []s2.WriterOption{s2.WriterUncompressed()}
+	case CompressionS2Best:
+		return []s2.WriterOption{s2.WriterBestCompression()}
+	case CompressionS2Better:
+		return []s2.WriterOption{s2.WriterBetterCompression()}
+	default:
+		return nil
+	}
 }
 
 // New will setup a new server struct after parsing the options.
@@ -331,9 +585,13 @@ func NewServer(opts *Options) (*Server, error) {
 	tlsReq := opts.TLSConfig != nil
 	verify := (tlsReq && opts.TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert)
 
-	// Created server's nkey identity.
+	// Create our server's nkey identity.
 	kp, _ := nkeys.CreateServer()
 	pub, _ := kp.PublicKey()
+
+	// Create an xkey for encrypting messages from this server.
+	xkp, _ := nkeys.CreateCurveKeys()
+	xpub, _ := xkp.PublicKey()
 
 	serverName := pub
 	if opts.ServerName != _EMPTY_ {
@@ -352,6 +610,7 @@ func NewServer(opts *Options) (*Server, error) {
 
 	info := Info{
 		ID:           pub,
+		XKey:         xpub,
 		Version:      VERSION,
 		Proto:        PROTO,
 		GitCommit:    gitCommit,
@@ -377,6 +636,8 @@ func NewServer(opts *Options) (*Server, error) {
 
 	s := &Server{
 		kp:                 kp,
+		xkp:                xkp,
+		xpub:               xpub,
 		configFile:         opts.ConfigFile,
 		info:               info,
 		opts:               opts,
@@ -436,7 +697,7 @@ func NewServer(opts *Options) (*Server, error) {
 			opts.Tags,
 			&JetStreamConfig{MaxMemory: opts.JetStreamMaxMemory, MaxStore: opts.JetStreamMaxStore, CompressOK: true},
 			nil,
-			false, true,
+			false, true, true,
 		})
 	}
 
@@ -491,8 +752,7 @@ func NewServer(opts *Options) (*Server, error) {
 	s.grTmpClients = make(map[uint64]*client)
 
 	// For tracking routes and their remote ids
-	s.routes = make(map[uint64]*client)
-	s.remotes = make(map[string]*client)
+	s.initRouteStructures(opts)
 
 	// For tracking leaf nodes.
 	s.leafs = make(map[uint64]*client)
@@ -558,6 +818,27 @@ func NewServer(opts *Options) (*Server, error) {
 	return s, nil
 }
 
+// Initializes route structures based on pooling and/or per-account routes.
+//
+// Server lock is held on entry
+func (s *Server) initRouteStructures(opts *Options) {
+	s.routes = make(map[string][]*client)
+	if ps := opts.Cluster.PoolSize; ps > 0 {
+		s.routesPoolSize = ps
+	} else {
+		s.routesPoolSize = 1
+	}
+	// If we have per-account routes, we create accRoutes and initialize it
+	// with nil values. The presence of an account as the key will allow us
+	// to know if a given account is supposed to have dedicated routes.
+	if l := len(opts.Cluster.PinnedAccounts); l > 0 {
+		s.accRoutes = make(map[string]map[string]*client, l)
+		for _, acc := range opts.Cluster.PinnedAccounts {
+			s.accRoutes[acc] = make(map[string]*client)
+		}
+	}
+}
+
 func (s *Server) logRejectedTLSConns() {
 	defer s.grWG.Done()
 	t := time.NewTicker(time.Second)
@@ -602,8 +883,6 @@ func (s *Server) setClusterName(name string) {
 	s.info.Cluster = name
 	s.routeInfo.Cluster = name
 
-	// Regenerate the info byte array
-	s.generateRouteInfoJSON()
 	// Need to close solicited leaf nodes. The close has to be done outside of the server lock.
 	var leafs []*client
 	for _, c := range s.leafs {
@@ -652,6 +931,11 @@ func (s *Server) ClientURL() string {
 }
 
 func validateCluster(o *Options) error {
+	if o.Cluster.Compression.Mode != _EMPTY_ {
+		if err := validateAndNormalizeCompressionOption(&o.Cluster.Compression, CompressionS2Fast); err != nil {
+			return err
+		}
+	}
 	if err := validatePinnedCerts(o.Cluster.TLSPinnedCerts); err != nil {
 		return fmt.Errorf("cluster: %v", err)
 	}
@@ -662,6 +946,18 @@ func validateCluster(o *Options) error {
 		}
 		// Set this here so we do not consider it dynamic.
 		o.Cluster.Name = o.Gateway.Name
+	}
+	if l := len(o.Cluster.PinnedAccounts); l > 0 {
+		if o.Cluster.PoolSize < 0 {
+			return fmt.Errorf("pool_size cannot be negative if pinned accounts are specified")
+		}
+		m := make(map[string]struct{}, l)
+		for _, a := range o.Cluster.PinnedAccounts {
+			if _, exists := m[a]; exists {
+				return fmt.Errorf("found duplicate account name %q in pinned accounts list %q", a, o.Cluster.PinnedAccounts)
+			}
+			m[a] = struct{}{}
+		}
 	}
 	return nil
 }
@@ -987,12 +1283,6 @@ func (s *Server) checkResolvePreloads() {
 			}
 		}
 	}
-}
-
-func (s *Server) generateRouteInfoJSON() {
-	b, _ := json.Marshal(s.routeInfo)
-	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
-	s.routeInfoJSON = bytes.Join(pcs, []byte(" "))
 }
 
 // Determines if we are in pre NATS 2.0 setup with no accounts.
@@ -1438,6 +1728,7 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 	s.setAccountSublist(acc)
 
 	acc.mu.Lock()
+	s.setRouteInfo(acc)
 	if acc.clients == nil {
 		acc.clients = make(map[*client]struct{})
 	}
@@ -1490,6 +1781,47 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 	s.mu.Lock()
 
 	return nil
+}
+
+// Sets the account's routePoolIdx depending on presence or not of
+// pooling or per-account routes. Also updates a map used by
+// gateway code to retrieve a route based on some route hash.
+//
+// Both Server and Account lock held on entry.
+func (s *Server) setRouteInfo(acc *Account) {
+	// If there is a dedicated route configured for this account
+	if _, ok := s.accRoutes[acc.Name]; ok {
+		// We want the account name to be in the map, but we don't
+		// need a value (we could store empty string)
+		s.accRouteByHash.Store(acc.Name, nil)
+		// Set the route pool index to -1 so that it is easy when
+		// ranging over accounts to exclude those accounts when
+		// trying to get accounts for a given pool index.
+		acc.routePoolIdx = accDedicatedRoute
+	} else {
+		// If pool size more than 1, we will compute a hash code and
+		// use modulo to assign to an index of the pool slice. For 1
+		// and below, all accounts will be bound to the single connection
+		// at index 0.
+		acc.routePoolIdx = s.computeRoutePoolIdx(acc)
+		if s.routesPoolSize > 1 {
+			s.accRouteByHash.Store(acc.Name, acc.routePoolIdx)
+		}
+	}
+}
+
+// Returns a route pool index for this account based on the given pool size.
+// Account lock is held on entry (account's name is accessed but immutable
+// so could be called without account's lock).
+// Server lock held on entry.
+func (s *Server) computeRoutePoolIdx(acc *Account) int {
+	if s.routesPoolSize <= 1 {
+		return 0
+	}
+	h := fnv.New32a()
+	h.Write([]byte(acc.Name))
+	sum32 := h.Sum32()
+	return int((sum32 % uint32(s.routesPoolSize)))
 }
 
 // lookupAccount is a function to return the account structure
@@ -1847,6 +2179,7 @@ func (s *Server) Start() {
 			MaxStore:   opts.JetStreamMaxStore,
 			Domain:     opts.JetStreamDomain,
 			CompressOK: true,
+			UniqueTag:  opts.JetStreamUniqueTag,
 		}
 		if err := s.EnableJetStream(cfg); err != nil {
 			s.Fatalf("Can't start JetStream: %v", err)
@@ -2022,9 +2355,11 @@ func (s *Server) Shutdown() {
 	}
 	s.grMu.Unlock()
 	// Copy off the routes
-	for i, r := range s.routes {
-		conns[i] = r
-	}
+	s.forEachRoute(func(r *client) {
+		r.mu.Lock()
+		conns[r.cid] = r
+		r.mu.Unlock()
+	})
 	// Copy off the gateways
 	s.getAllGatewayConnections(conns)
 
@@ -2789,6 +3124,7 @@ func (s *Server) saveClosedClient(c *client, nc net.Conn, reason ClosedState) {
 // Adds to the list of client and websocket clients connect URLs.
 // If there was a change, an INFO protocol is sent to registered clients
 // that support async INFO protocols.
+// Server lock held on entry.
 func (s *Server) addConnectURLsAndSendINFOToClients(curls, wsurls []string) {
 	s.updateServerINFOAndSendINFOToClients(curls, wsurls, true)
 }
@@ -2796,16 +3132,15 @@ func (s *Server) addConnectURLsAndSendINFOToClients(curls, wsurls []string) {
 // Removes from the list of client and websocket clients connect URLs.
 // If there was a change, an INFO protocol is sent to registered clients
 // that support async INFO protocols.
+// Server lock held on entry.
 func (s *Server) removeConnectURLsAndSendINFOToClients(curls, wsurls []string) {
 	s.updateServerINFOAndSendINFOToClients(curls, wsurls, false)
 }
 
 // Updates the list of client and websocket clients connect URLs and if any change
 // sends an async INFO update to clients that support it.
+// Server lock held on entry.
 func (s *Server) updateServerINFOAndSendINFOToClients(curls, wsurls []string, add bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	remove := !add
 	// Will return true if we need alter the server's Info object.
 	updateMap := func(urls []string, m refCountedUrlSet) bool {
@@ -2939,8 +3274,17 @@ func (s *Server) addToTempClients(cid uint64, c *client) bool {
 // NumRoutes will report the number of registered routes.
 func (s *Server) NumRoutes() int {
 	s.mu.RLock()
-	nr := len(s.routes)
-	s.mu.RUnlock()
+	defer s.mu.RUnlock()
+	return s.numRoutes()
+}
+
+// numRoutes will report the number of registered routes.
+// Server lock held on entry
+func (s *Server) numRoutes() int {
+	var nr int
+	s.forEachRoute(func(c *client) {
+		nr++
+	})
 	return nr
 }
 
@@ -2948,7 +3292,13 @@ func (s *Server) NumRoutes() int {
 func (s *Server) NumRemotes() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.remotes)
+	return s.numRemotes()
+}
+
+// numRemotes will report number of registered remotes.
+// Server lock held on entry
+func (s *Server) numRemotes() int {
+	return len(s.routes)
 }
 
 // NumLeafNodes will report number of leaf node connections.
@@ -3153,15 +3503,28 @@ func (s *Server) String() string {
 	return s.info.Name
 }
 
-func (s *Server) startGoRoutine(f func()) bool {
+type pprofLabels map[string]string
+
+func (s *Server) startGoRoutine(f func(), tags ...pprofLabels) bool {
 	var started bool
 	s.grMu.Lock()
+	defer s.grMu.Unlock()
 	if s.grRunning {
+		var labels []string
+		for _, m := range tags {
+			for k, v := range m {
+				labels = append(labels, k, v)
+			}
+		}
 		s.grWG.Add(1)
-		go f()
+		go func() {
+			pprof.SetGoroutineLabels(
+				pprof.WithLabels(context.Background(), pprof.Labels(labels...)),
+			)
+			f()
+		}()
 		started = true
 	}
-	s.grMu.Unlock()
 	return started
 }
 
@@ -3627,12 +3990,12 @@ func (s *Server) lameDuckMode() {
 // Server lock is held on entry.
 func (s *Server) sendLDMToRoutes() {
 	s.routeInfo.LameDuckMode = true
-	s.generateRouteInfoJSON()
-	for _, r := range s.routes {
+	infoJSON := generateInfoJSON(&s.routeInfo)
+	s.forEachRemote(func(r *client) {
 		r.mu.Lock()
-		r.enqueueProto(s.routeInfoJSON)
+		r.enqueueProto(infoJSON)
 		r.mu.Unlock()
-	}
+	})
 	// Clear now so that we notify only once, should we have to send other INFOs.
 	s.routeInfo.LameDuckMode = false
 }

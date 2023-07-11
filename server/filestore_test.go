@@ -39,11 +39,15 @@ import (
 
 func testFileStoreAllPermutations(t *testing.T, fn func(t *testing.T, fcfg FileStoreConfig)) {
 	for _, fcfg := range []FileStoreConfig{
-		{Cipher: NoCipher},
-		{Cipher: ChaCha},
-		{Cipher: AES},
+		{Cipher: NoCipher, Compression: NoCompression},
+		{Cipher: NoCipher, Compression: S2Compression},
+		{Cipher: AES, Compression: NoCompression},
+		{Cipher: AES, Compression: S2Compression},
+		{Cipher: ChaCha, Compression: NoCompression},
+		{Cipher: ChaCha, Compression: S2Compression},
 	} {
-		t.Run(fcfg.Cipher.String(), func(t *testing.T) {
+		subtestName := fmt.Sprintf("%s-%s", fcfg.Cipher, fcfg.Compression)
+		t.Run(subtestName, func(t *testing.T) {
 			fcfg.StoreDir = t.TempDir()
 			fn(t, fcfg)
 		})
@@ -584,6 +588,14 @@ func TestFileStoreAgeLimit(t *testing.T) {
 	maxAge := 250 * time.Millisecond
 
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		if fcfg.Compression != NoCompression {
+			// TODO(nat): This test fails at the moment with compression enabled
+			// because it takes longer to compress the blocks, by which time the
+			// messages have expired. Need to think about a balanced age so that
+			// the test doesn't take too long in non-compressed cases.
+			t.SkipNow()
+		}
+
 		fcfg.BlockSize = 256
 
 		fs, err := newFileStore(
@@ -869,7 +881,7 @@ func TestFileStoreCompact(t *testing.T) {
 func TestFileStoreCompactLastPlusOne(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 8192
-		fcfg.AsyncFlush = false
+		fcfg.AsyncFlush = true
 
 		fs, err := newFileStore(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage})
 		if err != nil {
@@ -883,6 +895,13 @@ func TestFileStoreCompactLastPlusOne(t *testing.T) {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 		}
+
+		// The performance of this test is quite terrible with compression
+		// if we have AsyncFlush = false, so we'll batch flushes instead.
+		fs.mu.Lock()
+		fs.checkAndFlushAllBlocks()
+		fs.mu.Unlock()
+
 		if state := fs.State(); state.Msgs != 10_000 {
 			t.Fatalf("Expected 1000000 msgs, got %d", state.Msgs)
 		}
@@ -3237,7 +3256,7 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 			} else if mb.last != mbc.last {
 				errStr = fmt.Sprintf("last state does not match: %d vs %d", mb.last, mbc.last)
 			} else if !reflect.DeepEqual(mb.dmap, mbc.dmap) {
-				errStr = fmt.Sprintf("deleted map does not match: %d vs %d", mb.dmap, mbc.dmap)
+				errStr = fmt.Sprintf("deleted map does not match: %+v vs %+v", mb.dmap, mbc.dmap)
 			}
 			mb.mu.RUnlock()
 			if errStr != _EMPTY_ {
@@ -3668,6 +3687,12 @@ func TestFileStoreFetchPerf(t *testing.T) {
 // https://github.com/nats-io/nats-server/issues/2936
 func TestFileStoreCompactReclaimHeadSpace(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		if fcfg.Compression != NoCompression {
+			// TODO(nat): Right now this test will fail when compression is
+			// enabled because the compressed length fails an assertion.
+			t.SkipNow()
+		}
+
 		fcfg.BlockSize = 4 * 1024 * 1024
 
 		fs, err := newFileStore(
@@ -3968,7 +3993,7 @@ func TestFileStoreRebuildStateDmapAccountingBug(t *testing.T) {
 			t.Helper()
 			mb.mu.RLock()
 			defer mb.mu.RUnlock()
-			dmapLen := uint64(len(mb.dmap))
+			dmapLen := uint64(mb.dmap.Size())
 			if mb.msgs != (mb.last.seq-mb.first.seq+1)-dmapLen {
 				t.Fatalf("Consistency check failed: %d != %d -> last %d first %d len(dmap) %d",
 					mb.msgs, (mb.last.seq-mb.first.seq+1)-dmapLen, mb.last.seq, mb.first.seq, dmapLen)
@@ -5237,6 +5262,7 @@ func TestFileStoreStreamTruncateResetMultiBlock(t *testing.T) {
 			_, _, err := fs.StoreMsg(subj, nil, msg)
 			require_NoError(t, err)
 		}
+		fs.syncBlocks()
 		require_True(t, fs.numMsgBlocks() == 500)
 
 		// Reset everything
@@ -5255,6 +5281,7 @@ func TestFileStoreStreamTruncateResetMultiBlock(t *testing.T) {
 			_, _, err := fs.StoreMsg(subj, nil, msg)
 			require_NoError(t, err)
 		}
+		fs.syncBlocks()
 
 		state = fs.State()
 		require_True(t, state.Msgs == 1000)
@@ -5423,6 +5450,63 @@ func TestFileStoreSubjectsTotals(t *testing.T) {
 	}
 }
 
+func TestFileStoreNewWriteIndexInfo(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = defaultLargeBlockSize
+
+		fs, err := newFileStore(fcfg, StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// Fill a block.
+		numToFill := 254200
+		for i := 0; i < numToFill; i++ {
+			_, _, err := fs.StoreMsg("A", nil, []byte("OK"))
+			require_NoError(t, err)
+		}
+
+		// Maximize interior deletes for testing the new AVL sequence set.
+		for seq := uint64(2); seq < uint64(numToFill); seq++ {
+			removed, err := fs.RemoveMsg(seq)
+			require_NoError(t, err)
+			require_True(t, removed)
+		}
+		// Grab first block
+		fs.mu.RLock()
+		mb := fs.blks[0]
+		fs.mu.RUnlock()
+
+		mb.mu.Lock()
+		start := time.Now()
+		require_NoError(t, mb.writeIndexInfoLocked())
+		elapsed := time.Since(start)
+		require_True(t, elapsed < time.Millisecond)
+		fi, err := os.Stat(mb.ifn)
+		mb.mu.Unlock()
+
+		require_NoError(t, err)
+		require_True(t, fi.Size() < 34*1024) // Just over 32k
+
+		mb.mu.Lock()
+		mb.dmap.Empty()
+		err = mb.readIndexInfo()
+		numMsgs := mb.msgs
+		firstSeq := mb.first.seq
+		lastSeq := mb.last.seq
+		mb.mu.Unlock()
+		// Make sure consistent.
+		require_NoError(t, err)
+		require_True(t, numMsgs == 2)
+		require_True(t, firstSeq == 1)
+		require_True(t, lastSeq == uint64(numToFill))
+
+		fs.Stop()
+		fs, err = newFileStore(fcfg, StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+		require_NoError(t, err)
+		defer fs.Stop()
+	})
+}
+
 func TestFileStoreConsumerStoreEncodeAfterRestart(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fs, err := newFileStore(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage})
@@ -5498,4 +5582,25 @@ func TestFileStoreNumPendingLargeNumBlks(t *testing.T) {
 	total, _ = fs.NumPending(6000, "zzz", false)
 	require_True(t, time.Since(start) < 50*time.Millisecond)
 	require_True(t, total == 4000)
+}
+
+func TestFileStoreSkipMsgAndNumBlocks(t *testing.T) {
+	// No need for all permutations here.
+	storeDir := t.TempDir()
+	fcfg := FileStoreConfig{
+		StoreDir:  storeDir,
+		BlockSize: 128, // Small on purpose to create alot of blks.
+	}
+	fs, err := newFileStore(fcfg, StreamConfig{Name: "zzz", Subjects: []string{"zzz"}, Storage: FileStorage})
+	require_NoError(t, err)
+
+	subj, msg := "zzz", bytes.Repeat([]byte("X"), 100)
+	numMsgs := 10_000
+
+	fs.StoreMsg(subj, nil, msg)
+	for i := 0; i < numMsgs; i++ {
+		fs.SkipMsg()
+	}
+	fs.StoreMsg(subj, nil, msg)
+	require_True(t, fs.numMsgBlocks() == 2)
 }

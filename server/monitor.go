@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -26,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
@@ -783,6 +785,8 @@ type RouteInfo struct {
 	NumSubs      uint32             `json:"subscriptions"`
 	Subs         []string           `json:"subscriptions_list,omitempty"`
 	SubsDetail   []SubDetail        `json:"subscriptions_list_detail,omitempty"`
+	Account      string             `json:"account,omitempty"`
+	Compression  string             `json:"compression,omitempty"`
 }
 
 // Routez returns a Routez struct containing information about routes.
@@ -795,7 +799,7 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 	}
 
 	s.mu.Lock()
-	rs.NumRoutes = len(s.routes)
+	rs.NumRoutes = s.numRoutes()
 
 	// copy the server id for monitoring
 	rs.ID = s.info.ID
@@ -807,8 +811,7 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 	}
 	rs.Name = s.getOpts().ServerName
 
-	// Walk the list
-	for _, r := range s.routes {
+	addRoute := func(r *client) {
 		r.mu.Lock()
 		ri := &RouteInfo{
 			Rid:          r.cid,
@@ -828,6 +831,8 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 			LastActivity: r.last,
 			Uptime:       myUptime(rs.Now.Sub(r.start)),
 			Idle:         myUptime(rs.Now.Sub(r.last)),
+			Account:      string(r.route.accName),
+			Compression:  r.route.compression,
 		}
 
 		if len(r.subs) > 0 {
@@ -847,6 +852,11 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 		r.mu.Unlock()
 		rs.Routes = append(rs.Routes, ri)
 	}
+
+	// Walk the list
+	s.forEachRoute(func(r *client) {
+		addRoute(r)
+	})
 	s.mu.Unlock()
 	return rs, nil
 }
@@ -1221,6 +1231,7 @@ type ClusterOptsVarz struct {
 	TLSTimeout  float64  `json:"tls_timeout,omitempty"`
 	TLSRequired bool     `json:"tls_required,omitempty"`
 	TLSVerify   bool     `json:"tls_verify,omitempty"`
+	PoolSize    int      `json:"pool_size,omitempty"`
 }
 
 // GatewayOptsVarz contains monitoring gateway information
@@ -1474,6 +1485,7 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			TLSTimeout:  c.TLSTimeout,
 			TLSRequired: clustTlsReq,
 			TLSVerify:   clustTlsReq,
+			PoolSize:    opts.Cluster.PoolSize,
 		},
 		Gateway: GatewayOptsVarz{
 			Name:           gw.Name,
@@ -1641,8 +1653,8 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 	}
 	v.Connections = len(s.clients)
 	v.TotalConnections = s.totalClients
-	v.Routes = len(s.routes)
-	v.Remotes = len(s.remotes)
+	v.Routes = s.numRoutes()
+	v.Remotes = s.numRemotes()
 	v.Leafs = len(s.leafs)
 	v.InMsgs = atomic.LoadInt64(&s.inMsgs)
 	v.InBytes = atomic.LoadInt64(&s.inBytes)
@@ -2090,18 +2102,19 @@ type LeafzOptions struct {
 
 // LeafInfo has detailed information on each remote leafnode connection.
 type LeafInfo struct {
-	Name     string   `json:"name"`
-	IsSpoke  bool     `json:"is_spoke"`
-	Account  string   `json:"account"`
-	IP       string   `json:"ip"`
-	Port     int      `json:"port"`
-	RTT      string   `json:"rtt,omitempty"`
-	InMsgs   int64    `json:"in_msgs"`
-	OutMsgs  int64    `json:"out_msgs"`
-	InBytes  int64    `json:"in_bytes"`
-	OutBytes int64    `json:"out_bytes"`
-	NumSubs  uint32   `json:"subscriptions"`
-	Subs     []string `json:"subscriptions_list,omitempty"`
+	Name        string   `json:"name"`
+	IsSpoke     bool     `json:"is_spoke"`
+	Account     string   `json:"account"`
+	IP          string   `json:"ip"`
+	Port        int      `json:"port"`
+	RTT         string   `json:"rtt,omitempty"`
+	InMsgs      int64    `json:"in_msgs"`
+	OutMsgs     int64    `json:"out_msgs"`
+	InBytes     int64    `json:"in_bytes"`
+	OutBytes    int64    `json:"out_bytes"`
+	NumSubs     uint32   `json:"subscriptions"`
+	Subs        []string `json:"subscriptions_list,omitempty"`
+	Compression string   `json:"compression,omitempty"`
 }
 
 // Leafz returns a Leafz structure containing information about leafnodes.
@@ -2131,17 +2144,18 @@ func (s *Server) Leafz(opts *LeafzOptions) (*Leafz, error) {
 		for _, ln := range lconns {
 			ln.mu.Lock()
 			lni := &LeafInfo{
-				Name:     ln.leaf.remoteServer,
-				IsSpoke:  ln.isSpokeLeafNode(),
-				Account:  ln.acc.Name,
-				IP:       ln.host,
-				Port:     int(ln.port),
-				RTT:      ln.getRTT().String(),
-				InMsgs:   atomic.LoadInt64(&ln.inMsgs),
-				OutMsgs:  ln.outMsgs,
-				InBytes:  atomic.LoadInt64(&ln.inBytes),
-				OutBytes: ln.outBytes,
-				NumSubs:  uint32(len(ln.subs)),
+				Name:        ln.leaf.remoteServer,
+				IsSpoke:     ln.isSpokeLeafNode(),
+				Account:     ln.acc.Name,
+				IP:          ln.host,
+				Port:        int(ln.port),
+				RTT:         ln.getRTT().String(),
+				InMsgs:      atomic.LoadInt64(&ln.inMsgs),
+				OutMsgs:     ln.outMsgs,
+				InBytes:     atomic.LoadInt64(&ln.inBytes),
+				OutBytes:    ln.outBytes,
+				NumSubs:     uint32(len(ln.subs)),
+				Compression: ln.leaf.compression,
 			}
 			if opts != nil && opts.Subscriptions {
 				lni.Subs = make([]string, 0, len(ln.subs))
@@ -2648,6 +2662,12 @@ type HealthzOptions struct {
 	JSEnabled     bool `json:"js-enabled,omitempty"`
 	JSEnabledOnly bool `json:"js-enabled-only,omitempty"`
 	JSServerOnly  bool `json:"js-server-only,omitempty"`
+}
+
+// ProfilezOptions are options passed to Profilez
+type ProfilezOptions struct {
+	Name  string `json:"name"`
+	Debug int    `json:"debug"`
 }
 
 // StreamDetail shows information about the stream state and its consumers.
@@ -3193,4 +3213,37 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 	}
 	// Success.
 	return health
+}
+
+type ProfilezStatus struct {
+	Profile []byte `json:"profile"`
+	Error   string `json:"error"`
+}
+
+func (s *Server) profilez(opts *ProfilezOptions) *ProfilezStatus {
+	if s.profiler == nil {
+		return &ProfilezStatus{
+			Error: "Profiling is not enabled",
+		}
+	}
+	if opts.Name == _EMPTY_ {
+		return &ProfilezStatus{
+			Error: "Profile name not specified",
+		}
+	}
+	profile := pprof.Lookup(opts.Name)
+	if profile == nil {
+		return &ProfilezStatus{
+			Error: fmt.Sprintf("Profile %q not found", opts.Name),
+		}
+	}
+	var buffer bytes.Buffer
+	if err := profile.WriteTo(&buffer, opts.Debug); err != nil {
+		return &ProfilezStatus{
+			Error: fmt.Sprintf("Profile %q error: %s", opts.Name, err),
+		}
+	}
+	return &ProfilezStatus{
+		Profile: buffer.Bytes(),
+	}
 }

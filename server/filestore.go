@@ -40,6 +40,7 @@ import (
 
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
+	"github.com/nats-io/nats-server/v2/server/avl"
 	"golang.org/x/crypto/chacha20"
 	"golang.org/x/crypto/chacha20poly1305"
 )
@@ -57,6 +58,8 @@ type FileStoreConfig struct {
 	AsyncFlush bool
 	// Cipher is the cipher to use when encrypting.
 	Cipher StoreCipher
+	// Compression is the algorithm to use when compressing.
+	Compression StoreCompression
 }
 
 // FileStreamInfo allows us to remember created time.
@@ -84,6 +87,53 @@ func (cipher StoreCipher) String() string {
 	default:
 		return "Unknown StoreCipher"
 	}
+}
+
+type StoreCompression uint8
+
+const (
+	NoCompression StoreCompression = iota
+	S2Compression
+)
+
+func (alg StoreCompression) String() string {
+	switch alg {
+	case NoCompression:
+		return "None"
+	case S2Compression:
+		return "S2"
+	default:
+		return "Unknown StoreCompression"
+	}
+}
+
+func (alg StoreCompression) MarshalJSON() ([]byte, error) {
+	var str string
+	switch alg {
+	case S2Compression:
+		str = "s2"
+	case NoCompression:
+		str = "none"
+	default:
+		return nil, fmt.Errorf("unknown compression algorithm")
+	}
+	return json.Marshal(str)
+}
+
+func (alg *StoreCompression) UnmarshalJSON(b []byte) error {
+	var str string
+	if err := json.Unmarshal(b, &str); err != nil {
+		return err
+	}
+	switch str {
+	case "s2":
+		*alg = S2Compression
+	case "none":
+		*alg = NoCompression
+	default:
+		return fmt.Errorf("unknown compression algorithm")
+	}
+	return nil
 }
 
 // File ConsumerInfo is used for creating consumer stores.
@@ -145,6 +195,7 @@ type msgBlock struct {
 	mfd     *os.File
 	ifn     string
 	ifd     *os.File
+	cmp     StoreCompression // Effective compression at the time of loading the block
 	liwsz   int64
 	index   uint32
 	bytes   uint64 // User visible bytes count.
@@ -164,7 +215,7 @@ type msgBlock struct {
 	cexp    time.Duration
 	ctmr    *time.Timer
 	werr    error
-	dmap    map[uint64]struct{}
+	dmap    avl.SequenceSet
 	fch     chan struct{}
 	qch     chan struct{}
 	lchk    [8]byte
@@ -202,6 +253,8 @@ const (
 	magic = uint8(22)
 	// Version
 	version = uint8(1)
+	// New IndexInfo Version
+	newVersion = uint8(2)
 	// hdrLen
 	hdrLen = 2
 	// This is where we keep the streams.
@@ -226,6 +279,8 @@ const (
 	consumerDir = "obs"
 	// Index file for a consumer.
 	consumerState = "o.dat"
+	// The suffix that will be given to a new temporary block during compression.
+	compressTmpSuffix = ".tmp"
 	// This is where we keep state on templates.
 	tmplsDir = "templates"
 	// Maximum size of a write buffer we may consider for re-use.
@@ -665,9 +720,6 @@ const (
 	emptyRecordLen = msgHdrSize + checksumSize
 )
 
-// This is the max room needed for index header.
-const indexHdrSize = 7*binary.MaxVarintLen64 + hdrLen + checksumSize
-
 // Lock should be held.
 func (fs *fileStore) noTrackSubjects() bool {
 	return !(len(fs.psim) > 0 || len(fs.cfg.Subjects) > 0 || fs.cfg.Mirror != nil || len(fs.cfg.Sources) > 0)
@@ -944,7 +996,7 @@ func (mb *msgBlock) convertToEncrypted() error {
 		return err
 	}
 	if buf, err = os.ReadFile(mb.ifn); err == nil && len(buf) > 0 {
-		if err := checkHeader(buf); err != nil {
+		if err := checkNewHeader(buf); err != nil {
 			return err
 		}
 		buf = mb.aek.Seal(buf[:0], mb.nonce, buf, nil)
@@ -972,13 +1024,13 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, error) {
 			// We need to declare lost data here.
 			ld = &LostStreamData{Msgs: make([]uint64, 0, mb.msgs), Bytes: mb.bytes}
 			for seq := mb.first.seq; seq <= mb.last.seq; seq++ {
-				if _, ok := mb.dmap[seq]; !ok {
+				if !mb.dmap.Exists(seq) {
 					ld.Msgs = append(ld.Msgs, seq)
 				}
 			}
 			// Clear invalid state. We will let this blk be added in here.
 			mb.msgs, mb.bytes, mb.rbytes, mb.fss = 0, 0, 0, nil
-			mb.dmap = nil
+			mb.dmap.Empty()
 			mb.first.seq = mb.last.seq + 1
 		}
 		return ld, err
@@ -1002,16 +1054,18 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, error) {
 		mb.bek.XORKeyStream(buf, buf)
 	}
 
+	// Check for compression.
+	if buf, err = mb.decompressIfNeeded(buf); err != nil {
+		return nil, err
+	}
+
 	mb.rbytes = uint64(len(buf))
 
 	addToDmap := func(seq uint64) {
 		if seq == 0 {
 			return
 		}
-		if mb.dmap == nil {
-			mb.dmap = make(map[uint64]struct{})
-		}
-		mb.dmap[seq] = struct{}{}
+		mb.dmap.Insert(seq)
 	}
 
 	var le = binary.LittleEndian
@@ -1096,10 +1150,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, error) {
 			firstNeedsSet, mb.first.seq, mb.first.ts = false, seq, ts
 		}
 
-		var deleted bool
-		if mb.dmap != nil {
-			_, deleted = mb.dmap[seq]
-		}
+		deleted := mb.dmap.Exists(seq)
 
 		// Always set last.
 		mb.last.seq = seq
@@ -1343,11 +1394,8 @@ func (fs *fileStore) expireMsgsOnRecover() {
 			// Process interior deleted msgs.
 			if err == errDeletedMsg {
 				// Update dmap.
-				if len(mb.dmap) > 0 {
-					delete(mb.dmap, seq)
-					if len(mb.dmap) == 0 {
-						mb.dmap = nil
-					}
+				if mb.dmap.Exists(seq) {
+					mb.dmap.Delete(seq)
 				}
 				// Keep this updated just in case since we are removing dmap entries.
 				mb.first.seq, needNextFirst = seq, true
@@ -2457,10 +2505,7 @@ func (mb *msgBlock) skipMsg(seq uint64, now time.Time) {
 		}
 	} else {
 		needsRecord = true
-		if mb.dmap == nil {
-			mb.dmap = make(map[uint64]struct{})
-		}
-		mb.dmap[seq] = struct{}{}
+		mb.dmap.Insert(seq)
 	}
 	mb.mu.Unlock()
 
@@ -2746,12 +2791,10 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	}
 
 	// Now check dmap if it is there.
-	if mb.dmap != nil {
-		if _, ok := mb.dmap[seq]; ok {
-			mb.mu.Unlock()
-			fsUnlock()
-			return false, nil
-		}
+	if mb.dmap.Exists(seq) {
+		mb.mu.Unlock()
+		fsUnlock()
+		return false, nil
 	}
 
 	// We used to not have to load in the messages except with callbacks or the filtered subject state (which is now always on).
@@ -2848,15 +2891,16 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 			}
 		}
 	} else if !isEmpty {
-		// Out of order delete.
-		if mb.dmap == nil {
-			mb.dmap = make(map[uint64]struct{})
+		if mb.dmap.IsEmpty() {
+			// Mark initial base for delete set.
+			mb.dmap.SetInitialMin(mb.first.seq)
 		}
-		mb.dmap[seq] = struct{}{}
+		// Out of order delete.
+		mb.dmap.Insert(seq)
 		// Check if <25% utilization and minimum size met.
 		if mb.rbytes > compactMinimum && !isLastBlock {
 			// Remove the interior delete records
-			rbytes := mb.rbytes - uint64(len(mb.dmap)*emptyRecordLen)
+			rbytes := mb.rbytes - uint64(mb.dmap.Size()*emptyRecordLen)
 			if rbytes>>2 > mb.bytes {
 				mb.compact()
 			}
@@ -2968,11 +3012,7 @@ func (mb *msgBlock) compact() {
 		if seq == 0 || seq&ebit != 0 || seq < mb.first.seq {
 			return true
 		}
-		var deleted bool
-		if mb.dmap != nil {
-			_, deleted = mb.dmap[seq]
-		}
-		return deleted
+		return mb.dmap.Exists(seq)
 	}
 
 	// For skip msgs.
@@ -3055,9 +3095,9 @@ func (mb *msgBlock) compact() {
 	}
 }
 
-// Nil out our dmap.
+// Empty out our dmap.
 func (mb *msgBlock) deleteDmap() {
-	mb.dmap = nil
+	mb.dmap.Empty()
 }
 
 // Grab info from a slot.
@@ -3096,8 +3136,8 @@ func (mb *msgBlock) spinUpFlushLoop() {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
-	// Are we already running?
-	if mb.flusher {
+	// Are we already running or closed?
+	if mb.flusher || mb.closed {
 		return
 	}
 	mb.flusher = true
@@ -3150,10 +3190,10 @@ func (mb *msgBlock) flushLoop(fch, qch chan struct{}) {
 		mb.mu.RLock()
 		defer mb.mu.RUnlock()
 		var changed bool
-		if firstSeq != mb.first.seq || lastSeq != mb.last.seq || dmapLen != len(mb.dmap) {
+		if firstSeq != mb.first.seq || lastSeq != mb.last.seq || dmapLen != mb.dmap.Size() {
 			changed = true
 			firstSeq, lastSeq = mb.first.seq, mb.last.seq
-			dmapLen = len(mb.dmap)
+			dmapLen = mb.dmap.Size()
 		}
 		return changed
 	}
@@ -3274,18 +3314,15 @@ func (mb *msgBlock) truncate(sm *StoreMsg) (nmsgs, nbytes uint64, err error) {
 
 	mb.mu.Lock()
 
-	checkDmap := len(mb.dmap) > 0
+	checkDmap := mb.dmap.Size() > 0
 	var smv StoreMsg
 
 	for seq := mb.last.seq; seq > sm.seq; seq-- {
 		if checkDmap {
-			if _, ok := mb.dmap[seq]; ok {
+			if mb.dmap.Exists(seq) {
 				// Delete and skip to next.
-				delete(mb.dmap, seq)
-				if len(mb.dmap) == 0 {
-					mb.dmap = nil
-					checkDmap = false
-				}
+				mb.dmap.Delete(seq)
+				checkDmap = !mb.dmap.IsEmpty()
 				continue
 			}
 		}
@@ -3306,8 +3343,55 @@ func (mb *msgBlock) truncate(sm *StoreMsg) (nmsgs, nbytes uint64, err error) {
 		}
 	}
 
-	// Truncate our msgs and close file.
-	if mb.mfd != nil {
+	// If the block is compressed then we have to load it into memory
+	// and decompress it, truncate it and then write it back out.
+	// Otherwise, truncate the file itself and close the descriptor.
+	if mb.cmp != NoCompression {
+		buf, err := mb.loadBlock(nil)
+		if err != nil {
+			return 0, 0, fmt.Errorf("failed to load block from disk: %w", err)
+		}
+		if mb.bek != nil && len(buf) > 0 {
+			bek, err := genBlockEncryptionKey(mb.fs.fcfg.Cipher, mb.seed, mb.nonce)
+			if err != nil {
+				return 0, 0, err
+			}
+			mb.bek = bek
+			mb.bek.XORKeyStream(buf, buf)
+		}
+		buf, err = mb.decompressIfNeeded(buf)
+		if err != nil {
+			return 0, 0, fmt.Errorf("failed to decompress block: %w", err)
+		}
+		buf = buf[:eof]
+		copy(mb.lchk[0:], buf[:len(buf)-checksumSize])
+		buf, err = mb.cmp.Compress(buf)
+		if err != nil {
+			return 0, 0, fmt.Errorf("failed to recompress block: %w", err)
+		}
+		meta := &CompressionInfo{
+			Algorithm:    mb.cmp,
+			OriginalSize: uint64(eof),
+		}
+		buf = append(meta.MarshalMetadata(), buf...)
+		if mb.bek != nil && len(buf) > 0 {
+			bek, err := genBlockEncryptionKey(mb.fs.fcfg.Cipher, mb.seed, mb.nonce)
+			if err != nil {
+				return 0, 0, err
+			}
+			mb.bek = bek
+			mb.bek.XORKeyStream(buf, buf)
+		}
+		n, err := mb.writeAt(buf, 0)
+		if err != nil {
+			return 0, 0, fmt.Errorf("failed to rewrite compressed block: %w", err)
+		}
+		if n != len(buf) {
+			return 0, 0, fmt.Errorf("short write (%d != %d)", n, len(buf))
+		}
+		mb.mfd.Truncate(int64(len(buf)))
+		mb.mfd.Sync()
+	} else if mb.mfd != nil {
 		mb.mfd.Truncate(eof)
 		mb.mfd.Sync()
 		// Update our checksum.
@@ -3348,9 +3432,9 @@ func (mb *msgBlock) isEmpty() bool {
 func (mb *msgBlock) selectNextFirst() {
 	var seq uint64
 	for seq = mb.first.seq + 1; seq <= mb.last.seq; seq++ {
-		if _, ok := mb.dmap[seq]; ok {
+		if mb.dmap.Exists(seq) {
 			// We will move past this so we can delete the entry.
-			delete(mb.dmap, seq)
+			mb.dmap.Delete(seq)
 		} else {
 			break
 		}
@@ -3800,12 +3884,14 @@ func (mb *msgBlock) pendingWriteSize() int {
 	if mb == nil {
 		return 0
 	}
-	var pending int
+
 	mb.mu.RLock()
-	if mb.mfd != nil && mb.cache != nil {
+	defer mb.mu.RUnlock()
+
+	var pending int
+	if !mb.closed && mb.mfd != nil && mb.cache != nil {
 		pending = len(mb.cache.buf) - int(mb.cache.wp)
 	}
-	mb.mu.RUnlock()
 	return pending
 }
 
@@ -3898,6 +3984,11 @@ func (fs *fileStore) writeMsgRecord(seq uint64, ts int64, subj string, hdr, msg 
 	// Grab our current last message block.
 	mb := fs.lmb
 	if mb == nil || mb.msgs > 0 && mb.blkSize()+rl > fs.fcfg.BlockSize {
+		if mb != nil && fs.fcfg.Compression != NoCompression {
+			// We've now reached the end of this message block, if we want
+			// to compress blocks then now's the time to do it.
+			go mb.recompressOnDiskIfNeeded()
+		}
 		if mb, err = fs.newMsgBlockForWrite(); err != nil {
 			return 0, err
 		}
@@ -3907,6 +3998,157 @@ func (fs *fileStore) writeMsgRecord(seq uint64, ts int64, subj string, hdr, msg 
 	err = mb.writeMsgRecord(rl, seq, subj, hdr, msg, ts, fs.fip)
 
 	return rl, err
+}
+
+func (mb *msgBlock) recompressOnDiskIfNeeded() error {
+	// Wait for disk I/O slots to become available. This prevents us from
+	// running away with system resources.
+	<-dios
+	defer func() {
+		dios <- struct{}{}
+	}()
+
+	alg := mb.fs.fcfg.Compression
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	origFN := mb.mfn                    // The original message block on disk.
+	tmpFN := mb.mfn + compressTmpSuffix // The compressed block will be written here.
+
+	// Open up the file block and read in the entire contents into memory.
+	// One of two things will happen:
+	// 1. The block will be compressed already and have a valid metadata
+	//    header, in which case we do nothing.
+	// 2. The block will be uncompressed, in which case we will compress it
+	//    and then write it back out to disk, reencrypting if necessary.
+	origBuf, err := os.ReadFile(origFN)
+	if err != nil {
+		return fmt.Errorf("failed to read original block from disk: %w", err)
+	}
+
+	// If the block is encrypted then we will need to decrypt it before
+	// doing anything. We always encrypt after compressing because then the
+	// compression can be as efficient as possible on the raw data, whereas
+	// the encrypted ciphertext will not compress anywhere near as well.
+	// The block encryption also covers the optional compression metadata.
+	if mb.bek != nil && len(origBuf) > 0 {
+		bek, err := genBlockEncryptionKey(mb.fs.fcfg.Cipher, mb.seed, mb.nonce)
+		if err != nil {
+			return err
+		}
+		mb.bek = bek
+		mb.bek.XORKeyStream(origBuf, origBuf)
+	}
+
+	meta := &CompressionInfo{}
+	if _, err := meta.UnmarshalMetadata(origBuf); err != nil {
+		// An error is only returned here if there's a problem with parsing
+		// the metadata. If the file has no metadata at all, no error is
+		// returned and the algorithm defaults to no compression.
+		return fmt.Errorf("failed to read existing metadata header: %w", err)
+	}
+	if meta.Algorithm == alg {
+		// The block is already compressed with the chosen algorithm so there
+		// is nothing else to do. This is not a common case, it is here only
+		// to ensure we don't do unnecessary work in case something asked us
+		// to recompress an already compressed block with the same algorithm.
+		return nil
+	} else if alg != NoCompression {
+		// The block is already compressed using some algorithm, so we need
+		// to decompress the block using the existing algorithm before we can
+		// recompress it with the new one.
+		if origBuf, err = meta.Algorithm.Decompress(origBuf); err != nil {
+			return fmt.Errorf("failed to decompress original block: %w", err)
+		}
+	}
+
+	// Rather than modifying the existing block on disk (which is a dangerous
+	// operation if something goes wrong), create a new temporary file. We will
+	// write out the new block here and then swap the files around afterwards
+	// once everything else has succeeded correctly.
+	tmpFD, err := os.OpenFile(tmpFN, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, defaultFilePerms)
+	if err != nil {
+		return fmt.Errorf("failed to create temporary file: %w", err)
+	}
+
+	// The original buffer at this point is uncompressed, so we will now compress
+	// it if needed. Note that if the selected algorithm is NoCompression, the
+	// Compress function will just return the input buffer unmodified.
+	cmpBuf, err := alg.Compress(origBuf)
+	if err != nil {
+		return fmt.Errorf("failed to compress block: %w", err)
+	}
+
+	// We only need to write out the metadata header if compression is enabled.
+	// If we're trying to uncompress the file on disk at this point, don't bother
+	// writing metadata.
+	if alg != NoCompression {
+		meta := &CompressionInfo{
+			Algorithm:    alg,
+			OriginalSize: uint64(len(origBuf)),
+		}
+		cmpBuf = append(meta.MarshalMetadata(), cmpBuf...)
+	}
+
+	// Re-encrypt the block if necessary.
+	if mb.bek != nil && len(cmpBuf) > 0 {
+		bek, err := genBlockEncryptionKey(mb.fs.fcfg.Cipher, mb.seed, mb.nonce)
+		if err != nil {
+			return err
+		}
+		mb.bek = bek
+		mb.bek.XORKeyStream(cmpBuf, cmpBuf)
+	}
+
+	// Write the new block data (which might be compressed or encrypted) to the
+	// temporary file.
+	errorCleanup := func(err error) error {
+		tmpFD.Close()
+		os.Remove(tmpFN)
+		return err
+	}
+	if n, err := tmpFD.Write(cmpBuf); err != nil {
+		return errorCleanup(fmt.Errorf("failed to write to temporary file: %w", err))
+	} else if n != len(cmpBuf) {
+		return errorCleanup(fmt.Errorf("short write to temporary file (%d != %d)", n, len(cmpBuf)))
+	}
+	if err := tmpFD.Sync(); err != nil {
+		return errorCleanup(fmt.Errorf("failed to sync temporary file: %w", err))
+	}
+	if err := tmpFD.Close(); err != nil {
+		return errorCleanup(fmt.Errorf("failed to close temporary file: %w", err))
+	}
+
+	// Now replace the original file with the newly updated temp file.
+	if err := os.Rename(tmpFN, origFN); err != nil {
+		return fmt.Errorf("failed to move temporary file into place: %w", err)
+	}
+
+	// Since the message block might be retained in memory, make sure the
+	// compression algorithm is up-to-date, since this will be needed when
+	// compacting or truncating.
+	mb.cmp = alg
+	return nil
+}
+
+func (mb *msgBlock) decompressIfNeeded(buf []byte) ([]byte, error) {
+	var meta CompressionInfo
+	if n, err := meta.UnmarshalMetadata(buf); err != nil {
+		// There was a problem parsing the metadata header of the block.
+		// If there's no metadata header, an error isn't returned here,
+		// we will instead just use default values of no compression.
+		return nil, err
+	} else if n == 0 {
+		// There were no metadata bytes, so we assume the block is not
+		// compressed and return it as-is.
+		return buf, nil
+	} else {
+		// Metadata was present so it's quite likely the block contents
+		// are compressed. If by any chance the metadata claims that the
+		// block is uncompressed, then the input slice is just returned
+		// unmodified.
+		return meta.Algorithm.Decompress(buf[n:])
+	}
 }
 
 // Sync msg and index files as needed. This is called from a timer.
@@ -4225,7 +4467,7 @@ func (mb *msgBlock) cacheAlreadyLoaded() bool {
 	if mb.cache == nil || mb.cache.off != 0 || mb.cache.fseq == 0 || len(mb.cache.buf) == 0 {
 		return false
 	}
-	numEntries := mb.msgs + uint64(len(mb.dmap)) + (mb.first.seq - mb.cache.fseq)
+	numEntries := mb.msgs + uint64(mb.dmap.Size()) + (mb.first.seq - mb.cache.fseq)
 	return numEntries == uint64(len(mb.cache.idx))
 }
 
@@ -4333,6 +4575,11 @@ checkCache:
 		mb.bek.XORKeyStream(buf, buf)
 	}
 
+	// Check for compression.
+	if buf, err = mb.decompressIfNeeded(buf); err != nil {
+		return err
+	}
+
 	if err := mb.indexCacheBuf(buf); err != nil {
 		if err == errCorruptState {
 			var ld *LostStreamData
@@ -4387,6 +4634,7 @@ var (
 	errNoEncryption  = errors.New("encryption not enabled")
 	errBadKeySize    = errors.New("encryption bad key size")
 	errNoMsgBlk      = errors.New("no message block")
+	errMsgBlkClosed  = errors.New("message block is closed")
 	errMsgBlkTooBig  = errors.New("message block size exceeded int capacity")
 	errUnknownCipher = errors.New("unknown cipher")
 	errDIOStalled    = errors.New("IO is stalled")
@@ -4407,8 +4655,8 @@ func (mb *msgBlock) cacheLookup(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
 	}
 
 	// If we have a delete map check it.
-	if mb.dmap != nil {
-		if _, ok := mb.dmap[seq]; ok {
+	if !mb.dmap.IsEmpty() {
+		if mb.dmap.Exists(seq) {
 			return nil, errDeletedMsg
 		}
 	}
@@ -4808,13 +5056,15 @@ func (fs *fileStore) State() StreamState {
 				}
 			}
 			cur = mb.last.seq + 1 // Expected next first.
-			for seq := range mb.dmap {
+
+			mb.dmap.Range(func(seq uint64) bool {
 				if seq < fseq {
-					delete(mb.dmap, seq)
+					mb.dmap.Delete(seq)
 				} else {
 					state.Deleted = append(state.Deleted, seq)
 				}
-			}
+				return true
+			})
 			mb.mu.Unlock()
 		}
 	}
@@ -4894,12 +5144,17 @@ func (mb *msgBlock) writeIndexInfo() error {
 // Write index info to the appropriate file.
 // Filestore lock and mb lock should be held.
 func (mb *msgBlock) writeIndexInfoLocked() error {
+	if mb.closed {
+		return errMsgBlkClosed
+	}
+
 	// HEADER: magic version msgs bytes fseq fts lseq lts ndel checksum
-	var hdr [indexHdrSize]byte
+	// Make large enough to hold almost all possible maximum interior delete scenarios.
+	var hdr [42 * 1024]byte
 
 	// Write header
 	hdr[0] = magic
-	hdr[1] = version
+	hdr[1] = newVersion
 
 	n := hdrLen
 	n += binary.PutUvarint(hdr[n:], mb.msgs)
@@ -4908,12 +5163,21 @@ func (mb *msgBlock) writeIndexInfoLocked() error {
 	n += binary.PutVarint(hdr[n:], mb.first.ts)
 	n += binary.PutUvarint(hdr[n:], mb.last.seq)
 	n += binary.PutVarint(hdr[n:], mb.last.ts)
-	n += binary.PutUvarint(hdr[n:], uint64(len(mb.dmap)))
+	n += binary.PutUvarint(hdr[n:], uint64(mb.dmap.Size()))
 	buf := append(hdr[:n], mb.lchk[:]...)
 
 	// Append a delete map if needed
-	if len(mb.dmap) > 0 {
-		buf = append(buf, mb.genDeleteMap()...)
+	if !mb.dmap.IsEmpty() {
+		// Always attempt to tack it onto end.
+		dmap, err := mb.dmap.Encode(hdr[len(buf):])
+		if err != nil {
+			return err
+		}
+		if len(dmap) < cap(hdr)-len(buf) {
+			buf = hdr[:len(buf)+len(dmap)]
+		} else {
+			buf = append(buf, dmap...)
+		}
 	}
 
 	// Open our FD if needed.
@@ -4936,7 +5200,7 @@ func (mb *msgBlock) writeIndexInfoLocked() error {
 	// Check if this will be a short write, and if so truncate before writing here.
 	// We only really need to truncate if we are encryptyed or we have dmap entries.
 	// If no dmap entries readIndexInfo does the right thing in the presence of extra data left over.
-	if int64(len(buf)) < mb.liwsz && (mb.aek != nil || len(mb.dmap) > 0) {
+	if int64(len(buf)) < mb.liwsz && (mb.aek != nil || !mb.dmap.IsEmpty()) {
 		if err := mb.ifd.Truncate(0); err != nil {
 			mb.werr = err
 			return err
@@ -4952,6 +5216,14 @@ func (mb *msgBlock) writeIndexInfoLocked() error {
 		mb.werr = err
 	}
 	return err
+}
+
+func checkNewHeader(hdr []byte) error {
+	if hdr == nil || len(hdr) < 2 || hdr[0] != magic ||
+		(hdr[1] != version && hdr[1] != newVersion) {
+		return errCorruptState
+	}
+	return nil
 }
 
 // readIndexInfo will read in the index information for the message block.
@@ -4974,7 +5246,7 @@ func (mb *msgBlock) readIndexInfo() error {
 		}
 	}
 
-	if err := checkHeader(buf); err != nil {
+	if err := checkNewHeader(buf); err != nil {
 		defer os.Remove(mb.ifn)
 		return fmt.Errorf("bad index file")
 	}
@@ -5033,35 +5305,26 @@ func (mb *msgBlock) readIndexInfo() error {
 
 	// Now check for presence of a delete map
 	if dmapLen > 0 {
-		mb.dmap = make(map[uint64]struct{}, dmapLen)
-		for i := 0; i < int(dmapLen); i++ {
-			seq := readSeq()
-			if seq == 0 {
-				break
+		// New version is encoded avl seqset.
+		if buf[1] == newVersion {
+			dmap, _, err := avl.Decode(buf[bi:])
+			if err != nil {
+				return fmt.Errorf("could not decode avl dmap: %v", err)
 			}
-			mb.dmap[seq+mb.first.seq] = struct{}{}
+			mb.dmap = *dmap
+		} else {
+			// This is the old version.
+			for i := 0; i < int(dmapLen); i++ {
+				seq := readSeq()
+				if seq == 0 {
+					break
+				}
+				mb.dmap.Insert(seq + mb.first.seq)
+			}
 		}
 	}
 
 	return nil
-}
-
-func (mb *msgBlock) genDeleteMap() []byte {
-	if len(mb.dmap) == 0 {
-		return nil
-	}
-	buf := make([]byte, len(mb.dmap)*binary.MaxVarintLen64)
-	// We use first seq as an offset to cut down on size.
-	fseq, n := uint64(mb.first.seq), 0
-	for seq := range mb.dmap {
-		// This is for lazy cleanup as the first sequence moves up.
-		if seq < fseq {
-			delete(mb.dmap, seq)
-		} else {
-			n += binary.PutUvarint(buf[n:], seq-fseq)
-		}
-	}
-	return buf[:n]
 }
 
 func syncAndClose(mfd, ifd *os.File) {
@@ -5106,7 +5369,7 @@ func (fs *fileStore) dmapEntries() int {
 	var total int
 	fs.mu.RLock()
 	for _, mb := range fs.blks {
-		total += len(mb.dmap)
+		total += mb.dmap.Size()
 	}
 	fs.mu.RUnlock()
 	return total
@@ -5233,10 +5496,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 					}
 				} else {
 					// Out of order delete.
-					if mb.dmap == nil {
-						mb.dmap = make(map[uint64]struct{})
-					}
-					mb.dmap[seq] = struct{}{}
+					mb.dmap.Insert(seq)
 				}
 
 				if maxp > 0 && purged >= maxp {
@@ -5409,11 +5669,8 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 		sm, err := smb.cacheLookup(mseq, &smv)
 		if err == errDeletedMsg {
 			// Update dmap.
-			if len(smb.dmap) > 0 {
-				delete(smb.dmap, mseq)
-				if len(smb.dmap) == 0 {
-					smb.dmap = nil
-				}
+			if !smb.dmap.IsEmpty() {
+				smb.dmap.Delete(seq)
 			}
 		} else if sm != nil {
 			sz := fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
@@ -5470,6 +5727,11 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 				// For future writes make sure to set smb.bek to keep counter correct.
 				smb.bek = bek
 				smb.bek.XORKeyStream(nbuf, nbuf)
+			}
+			// Recompress if necessary (smb.cmp contains the algorithm used when
+			// the block was loaded from disk, or defaults to NoCompression if not)
+			if nbuf, err = smb.cmp.Compress(nbuf); err != nil {
+				goto SKIP
 			}
 			if err = os.WriteFile(smb.mfn, nbuf, defaultFilePerms); err != nil {
 				goto SKIP
@@ -5616,7 +5878,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 	nmsgs, nbytes, err := nlmb.truncate(lsm)
 	if err != nil {
 		fs.mu.Unlock()
-		return err
+		return fmt.Errorf("nlmb.truncate: %w", err)
 	}
 	// Account for the truncated msgs and bytes.
 	purged += nmsgs
@@ -5886,10 +6148,8 @@ func (mb *msgBlock) recalculateFirstForSubj(subj string, startSeq uint64, ss *Si
 			if seq&ebit != 0 {
 				continue
 			}
-			if len(mb.dmap) > 0 {
-				if _, ok := mb.dmap[seq]; ok {
-					continue
-				}
+			if mb.dmap.Exists(seq) {
+				continue
 			}
 			ss.First = seq
 			mb.fssNeedsWrite = true // Mark dirty
@@ -6170,7 +6430,6 @@ func (mb *msgBlock) close(sync bool) {
 	if mb.closed {
 		return
 	}
-	mb.closed = true
 
 	// Stop cache expiration timer.
 	if mb.ctmr != nil {
@@ -6204,6 +6463,8 @@ func (mb *msgBlock) close(sync bool) {
 	}
 	mb.mfd = nil
 	mb.ifd = nil
+	// Mark as closed.
+	mb.closed = true
 }
 
 func (fs *fileStore) closeAllMsgBlocks(sync bool) {
@@ -6407,6 +6668,13 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includ
 			}
 			rbek.XORKeyStream(bbuf, bbuf)
 		}
+		// Check for compression.
+		if bbuf, err = mb.decompressIfNeeded(bbuf); err != nil {
+			mb.mu.Unlock()
+			writeErr(fmt.Sprintf("Could not decompress message block [%d]: %v", mb.index, err))
+			return
+		}
+
 		// Make sure we snapshot the per subject info.
 		mb.writePerSubjectInfo()
 		buf, err = os.ReadFile(mb.sfn)
@@ -6516,6 +6784,153 @@ func (fs *fileStore) fileStoreConfig() FileStoreConfig {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 	return fs.fcfg
+}
+
+// When we will write a run length encoded record vs adding to the existing avl.SequenceSet.
+const rlThresh = 4096
+
+// Binary encoded state snapshot, >= v2.10 server.
+func (fs *fileStore) EncodedStreamState(failed uint64) ([]byte, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	// Calculate deleted.
+	var numDeleted int64
+	if fs.state.LastSeq > fs.state.FirstSeq {
+		numDeleted = int64(fs.state.LastSeq-fs.state.FirstSeq+1) - int64(fs.state.Msgs)
+		if numDeleted < 0 {
+			numDeleted = 0
+		}
+	}
+
+	// Encoded is Msgs, Bytes, FirstSeq, LastSeq, Failed, NumDeleted and optional DeletedBlocks
+	var buf [1024]byte
+	buf[0], buf[1] = streamStateMagic, streamStateVersion
+	n := hdrLen
+	n += binary.PutUvarint(buf[n:], fs.state.Msgs)
+	n += binary.PutUvarint(buf[n:], fs.state.Bytes)
+	n += binary.PutUvarint(buf[n:], fs.state.FirstSeq)
+	n += binary.PutUvarint(buf[n:], fs.state.LastSeq)
+	n += binary.PutUvarint(buf[n:], failed)
+	n += binary.PutUvarint(buf[n:], uint64(numDeleted))
+
+	b := buf[0:n]
+
+	if numDeleted > 0 {
+		var scratch [4 * 1024]byte
+		for _, db := range fs.deleteBlocks() {
+			switch db := db.(type) {
+			case *DeleteRange:
+				first, _, num := db.State()
+				scratch[0] = runLengthMagic
+				i := 1
+				i += binary.PutUvarint(scratch[i:], first)
+				i += binary.PutUvarint(scratch[i:], num)
+				b = append(b, scratch[0:i]...)
+			case *avl.SequenceSet:
+				buf, err := db.Encode(scratch[:0])
+				if err != nil {
+					return nil, err
+				}
+				b = append(b, buf...)
+			}
+		}
+	}
+
+	return b, nil
+}
+
+// Lock should be held.
+func (fs *fileStore) deleteBlocks() DeleteBlocks {
+	var (
+		dbs      DeleteBlocks
+		adm      *avl.SequenceSet
+		prevLast uint64
+	)
+	for _, mb := range fs.blks {
+		mb.mu.RLock()
+		// Detect if we have a gap between these blocks.
+		if prevLast > 0 && prevLast+1 != mb.first.seq {
+			// Detect if we need to encode a run length encoding here.
+			gap := mb.first.seq - prevLast - 1
+			if gap > rlThresh {
+				// Check if we have a running adm, if so write that out first, or if contigous update rle params.
+				if adm != nil && adm.Size() > 0 {
+					min, max := adm.MinMax()
+					// Check if we are all contingous.
+					if uint64(adm.Size()) == max-min+1 {
+						prevLast, gap = min-1, mb.first.seq-min
+					} else {
+						dbs = append(dbs, adm)
+					}
+					// Always nil out here.
+					adm = nil
+				}
+				dbs = append(dbs, &DeleteRange{First: prevLast + 1, Num: gap})
+			} else {
+				// Common dmap
+				if adm == nil {
+					adm = &avl.SequenceSet{}
+					adm.SetInitialMin(prevLast + 1)
+				}
+				for seq := prevLast + 1; seq < mb.first.seq; seq++ {
+					adm.Insert(seq)
+				}
+			}
+		}
+		if sz := mb.dmap.Size(); sz > 0 {
+			// Check in case the mb's dmap is contiguous.
+			min, max := mb.dmap.MinMax()
+			if uint64(sz) == max-min+1 {
+				// Need to write out adm if it exists.
+				if adm != nil && adm.Size() > 0 {
+					dbs = append(dbs, adm)
+				}
+				dbs = append(dbs, &DeleteRange{First: min, Num: max - min + 1})
+			} else {
+				// Aggregated dmap
+				if adm == nil {
+					adm = mb.dmap.Clone()
+				} else {
+					adm.Union(&mb.dmap)
+				}
+			}
+		}
+		prevLast = mb.last.seq
+		mb.mu.RUnlock()
+	}
+
+	if adm != nil {
+		dbs = append(dbs, adm)
+	}
+
+	return dbs
+}
+
+// SyncDeleted will make sure this stream has same deleted state as dbs.
+func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) {
+	if len(dbs) == 0 {
+		return
+	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	mdbs := fs.deleteBlocks()
+	for i, db := range dbs {
+		// If the block is same as what we have we can skip.
+		if i < len(mdbs) {
+			first, last, num := db.State()
+			eFirst, eLast, eNum := mdbs[i].State()
+			if first == eFirst && last == eLast && num == eNum {
+				continue
+			}
+		}
+		// Need to insert these.
+		db.Range(func(dseq uint64) bool {
+			fs.removeMsg(dseq, false, true, false)
+			return true
+		})
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -7569,4 +7984,108 @@ func (ts *templateFileStore) Store(t *streamTemplate) error {
 
 func (ts *templateFileStore) Delete(t *streamTemplate) error {
 	return os.RemoveAll(filepath.Join(ts.dir, t.Name))
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Compression
+////////////////////////////////////////////////////////////////////////////////
+
+type CompressionInfo struct {
+	Algorithm    StoreCompression
+	OriginalSize uint64
+}
+
+func (c *CompressionInfo) MarshalMetadata() []byte {
+	b := make([]byte, 14) // 4 + potentially up to 10 for uint64
+	b[0], b[1], b[2] = 'c', 'm', 'p'
+	b[3] = byte(c.Algorithm)
+	n := binary.PutUvarint(b[4:], c.OriginalSize)
+	return b[:4+n]
+}
+
+func (c *CompressionInfo) UnmarshalMetadata(b []byte) (int, error) {
+	c.Algorithm = NoCompression
+	c.OriginalSize = 0
+	if len(b) < 5 { // 4 + min 1 for uvarint uint64
+		return 0, nil
+	}
+	if b[0] != 'c' || b[1] != 'm' || b[2] != 'p' {
+		return 0, nil
+	}
+	var n int
+	c.Algorithm = StoreCompression(b[3])
+	c.OriginalSize, n = binary.Uvarint(b[4:])
+	if n <= 0 {
+		return 0, fmt.Errorf("metadata incomplete")
+	}
+	return 4 + n, nil
+}
+
+func (alg StoreCompression) Compress(buf []byte) ([]byte, error) {
+	if len(buf) < checksumSize {
+		return nil, fmt.Errorf("uncompressed buffer is too short")
+	}
+	bodyLen := int64(len(buf) - checksumSize)
+	var output bytes.Buffer
+	var writer io.WriteCloser
+	switch alg {
+	case NoCompression:
+		return buf, nil
+	case S2Compression:
+		writer = s2.NewWriter(&output)
+	default:
+		return nil, fmt.Errorf("compression algorithm not known")
+	}
+
+	input := bytes.NewReader(buf[:bodyLen])
+	checksum := buf[bodyLen:]
+
+	// Compress the block content, but don't compress the checksum.
+	// We will preserve it at the end of the block as-is.
+	if n, err := io.CopyN(writer, input, bodyLen); err != nil {
+		return nil, fmt.Errorf("error writing to compression writer: %w", err)
+	} else if n != bodyLen {
+		return nil, fmt.Errorf("short write on body (%d != %d)", n, bodyLen)
+	}
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("error closing compression writer: %w", err)
+	}
+
+	// Now add the checksum back onto the end of the block.
+	if n, err := output.Write(checksum); err != nil {
+		return nil, fmt.Errorf("error writing checksum: %w", err)
+	} else if n != checksumSize {
+		return nil, fmt.Errorf("short write on checksum (%d != %d)", n, checksumSize)
+	}
+
+	return output.Bytes(), nil
+}
+
+func (alg StoreCompression) Decompress(buf []byte) ([]byte, error) {
+	if len(buf) < checksumSize {
+		return nil, fmt.Errorf("compressed buffer is too short")
+	}
+	bodyLen := int64(len(buf) - checksumSize)
+	input := bytes.NewReader(buf[:bodyLen])
+
+	var reader io.ReadCloser
+	switch alg {
+	case NoCompression:
+		return buf, nil
+	case S2Compression:
+		reader = io.NopCloser(s2.NewReader(input))
+	default:
+		return nil, fmt.Errorf("compression algorithm not known")
+	}
+
+	// Decompress the block content. The checksum isn't compressed so
+	// we can preserve it from the end of the block as-is.
+	checksum := buf[bodyLen:]
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("error reading compression reader: %w", err)
+	}
+	output = append(output, checksum...)
+
+	return output, reader.Close()
 }

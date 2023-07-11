@@ -1750,6 +1750,7 @@ func TestMQTTTopicAndSubjectConversion(t *testing.T) {
 		{"///foo/", "///foo/", "/././.foo./", ""},
 		{"///foo//", "///foo//", "/././.foo././", ""},
 		{"///foo///", "///foo///", "/././.foo./././", ""},
+		{"//.foo.//", "//.foo.//", "/././/foo//././", ""},
 		{"foo/bar", "foo/bar", "foo.bar", ""},
 		{"/foo/bar", "/foo/bar", "/.foo.bar", ""},
 		{"/foo/bar/", "/foo/bar/", "/.foo.bar./", ""},
@@ -1762,17 +1763,31 @@ func TestMQTTTopicAndSubjectConversion(t *testing.T) {
 		{"foo//bar", "foo//bar", "foo./.bar", ""},
 		{"foo///bar", "foo///bar", "foo././.bar", ""},
 		{"foo////bar", "foo////bar", "foo./././.bar", ""},
+		{".", ".", "//", ""},
+		{"..", "..", "////", ""},
+		{"...", "...", "//////", ""},
+		{"./", "./", "//./", ""},
+		{".//.", ".//.", "//././/", ""},
+		{"././.", "././.", "//.//.//", ""},
+		{"././/.", "././/.", "//.//././/", ""},
+		{".foo", ".foo", "//foo", ""},
+		{"foo.", "foo.", "foo//", ""},
+		{".foo.", ".foo.", "//foo//", ""},
+		{"foo../bar/", "foo../bar/", "foo////.bar./", ""},
+		{"foo../bar/.", "foo../bar/.", "foo////.bar.//", ""},
+		{"/foo/", "/foo/", "/.foo./", ""},
+		{"./foo/.", "./foo/.", "//.foo.//", ""},
+		{"foo.bar/baz", "foo.bar/baz", "foo//bar.baz", ""},
 		// These should produce errors
 		{"foo/+", "foo/+", "", "wildcards not allowed in publish"},
 		{"foo/#", "foo/#", "", "wildcards not allowed in publish"},
 		{"foo bar", "foo bar", "", "not supported"},
-		{"foo.bar", "foo.bar", "", "not supported"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			res, err := mqttTopicToNATSPubSubject([]byte(test.mqttTopic))
 			if test.err != _EMPTY_ {
 				if err == nil || !strings.Contains(err.Error(), test.err) {
-					t.Fatalf("Expected error %q, got %q", test.err, err.Error())
+					t.Fatalf("Expected error %q, got %v", test.err, err)
 				}
 				return
 			}
@@ -1813,6 +1828,7 @@ func TestMQTTFilterConversion(t *testing.T) {
 		{"single level wildcard", "foo//+//", "foo./.*././"},
 		{"single level wildcard", "foo//+//bar", "foo./.*./.bar"},
 		{"single level wildcard", "foo///+///bar", "foo././.*././.bar"},
+		{"single level wildcard", "foo.bar///+///baz", "foo//bar././.*././.baz"},
 
 		{"multi level wildcard", "#", ">"},
 		{"multi level wildcard", "/#", "/.>"},
@@ -1821,6 +1837,7 @@ func TestMQTTFilterConversion(t *testing.T) {
 		{"multi level wildcard", "foo//#", "foo./.>"},
 		{"multi level wildcard", "foo///#", "foo././.>"},
 		{"multi level wildcard", "foo/bar/#", "foo.bar.>"},
+		{"multi level wildcard", "foo/bar.baz/#", "foo.bar//baz.>"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			res, err := mqttFilterToNATSSubject([]byte(test.mqttTopic))
@@ -1979,6 +1996,11 @@ func testMQTTCheckPubMsgNoAck(t testing.TB, c net.Conn, r *mqttReader, topic str
 }
 
 func testMQTTGetPubMsg(t testing.TB, c net.Conn, r *mqttReader, topic string, payload []byte) (byte, uint16) {
+	flags, pi, _ := testMQTTGetPubMsgEx(t, c, r, topic, payload)
+	return flags, pi
+}
+
+func testMQTTGetPubMsgEx(t testing.TB, c net.Conn, r *mqttReader, topic string, payload []byte) (byte, uint16, string) {
 	t.Helper()
 	b, pl := testMQTTReadPacket(t, r)
 	if pt := b & mqttPacketMask; pt != mqttPacketPub {
@@ -1991,7 +2013,7 @@ func testMQTTGetPubMsg(t testing.TB, c net.Conn, r *mqttReader, topic string, pa
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ptopic != topic {
+	if topic != _EMPTY_ && ptopic != topic {
 		t.Fatalf("Expected topic %q, got %q", topic, ptopic)
 	}
 	var pi uint16
@@ -2011,7 +2033,7 @@ func testMQTTGetPubMsg(t testing.TB, c net.Conn, r *mqttReader, topic string, pa
 		t.Fatalf("Expected payload %q, got %q", payload, ppayload)
 	}
 	r.pos += msgLen
-	return pflags, pi
+	return pflags, pi, ptopic
 }
 
 func testMQTTSendPubAck(t testing.TB, c net.Conn, pi uint16) {
@@ -2791,7 +2813,7 @@ func TestMQTTCluster(t *testing.T) {
 					}
 				})
 			}
-			if topTest.restart {
+			if !t.Failed() && topTest.restart {
 				cl.stopAll()
 				cl.restartAll()
 
@@ -2970,8 +2992,8 @@ func TestMQTTRetainedMsgNetworkUpdates(t *testing.T) {
 		t.Run(test.subject, func(t *testing.T) {
 			for _, a := range test.order {
 				if a.add {
-					rm := &mqttRetainedMsg{sseq: a.seq}
-					asm.handleRetainedMsg(test.subject, rm)
+					rf := &mqttRetainedMsgRef{sseq: a.seq}
+					asm.handleRetainedMsg(test.subject, rf)
 				} else {
 					asm.handleRetainedMsgDel(test.subject, a.seq)
 				}
@@ -2983,13 +3005,95 @@ func TestMQTTRetainedMsgNetworkUpdates(t *testing.T) {
 	for _, subject := range []string{"foo.5", "foo.6"} {
 		t.Run("clear_"+subject, func(t *testing.T) {
 			// Now add a new message, which should clear the floor.
-			rm := &mqttRetainedMsg{sseq: 3}
-			asm.handleRetainedMsg(subject, rm)
+			rf := &mqttRetainedMsgRef{sseq: 3}
+			asm.handleRetainedMsg(subject, rf)
 			check(t, subject, true, 3, 0)
 			// Now do a non network delete and make sure it is gone.
 			asm.handleRetainedMsgDel(subject, 0)
 			check(t, subject, false, 0, 0)
 		})
+	}
+}
+
+func TestMQTTRetainedMsgMigration(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Create the retained messages stream to listen on the old subject first.
+	// The server will correct this when the migration takes place.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      mqttRetainedMsgsStreamName,
+		Subjects:  []string{`$MQTT.rmsgs`},
+		Storage:   nats.FileStorage,
+		Retention: nats.LimitsPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	// Publish some retained messages on the old "$MQTT.rmsgs" subject.
+	for i := 0; i < 100; i++ {
+		msg := fmt.Sprintf(
+			`{"origin":"b5IQZNtG","subject":"test%d","topic":"test%d","msg":"YmFy","flags":1}`, i, i,
+		)
+		_, err := js.Publish(`$MQTT.rmsgs`, []byte(msg))
+		require_NoError(t, err)
+	}
+
+	// Check that the old subject looks right.
+	si, err := js.StreamInfo(mqttRetainedMsgsStreamName, &nats.StreamInfoRequest{
+		SubjectsFilter: `$MQTT.>`,
+	})
+	require_NoError(t, err)
+	if si.State.NumSubjects != 1 {
+		t.Fatalf("expected 1 subject, got %d", si.State.NumSubjects)
+	}
+	if n := si.State.Subjects[`$MQTT.rmsgs`]; n != 100 {
+		t.Fatalf("expected to find 100 messages on the original subject but found %d", n)
+	}
+
+	// Create an MQTT client, this will cause a migration to take place.
+	mc, rc := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, false)
+
+	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "+", qos: 0}}, []byte{0})
+	topics := map[string]struct{}{}
+	for i := 0; i < 100; i++ {
+		_, _, topic := testMQTTGetPubMsgEx(t, mc, rc, _EMPTY_, []byte("bar"))
+		topics[topic] = struct{}{}
+	}
+	if len(topics) != 100 {
+		t.Fatalf("Unexpected topics: %v", topics)
+	}
+
+	// Now look at the stream, there should be 100 messages on the new
+	// divided subjects and none on the old undivided subject.
+	si, err = js.StreamInfo(mqttRetainedMsgsStreamName, &nats.StreamInfoRequest{
+		SubjectsFilter: `$MQTT.>`,
+	})
+	require_NoError(t, err)
+	if si.State.NumSubjects != 100 {
+		t.Fatalf("expected 100 subjects, got %d", si.State.NumSubjects)
+	}
+	if n := si.State.Subjects[`$MQTT.rmsgs`]; n > 0 {
+		t.Fatalf("expected to find no messages on the original subject but found %d", n)
+	}
+
+	// Check that the message counts look right. There should be one
+	// retained message per key.
+	for i := 0; i < 100; i++ {
+		expected := fmt.Sprintf(`$MQTT.rmsgs.test%d`, i)
+		n, ok := si.State.Subjects[expected]
+		if !ok {
+			t.Fatalf("expected to find %q but didn't", expected)
+		}
+		if n != 1 {
+			t.Fatalf("expected %q to have 1 message but had %d", expected, n)
+		}
 	}
 }
 
@@ -6365,6 +6469,47 @@ func TestMQTTSubjectWildcardStart(t *testing.T) {
 	require_NoError(t, err)
 
 	require_True(t, si.State.Msgs == 0)
+}
+
+func TestMQTTTopicWithDot(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	nc := natsConnect(t, s.ClientURL(), nats.UserInfo("mqtt", "pwd"))
+	defer nc.Close()
+
+	sub := natsSubSync(t, nc, "*.*")
+
+	c1, r1 := testMQTTConnect(t, &mqttConnInfo{user: "mqtt", pass: "pwd", clientID: "conn1", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer c1.Close()
+	testMQTTCheckConnAck(t, r1, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c1, r1, []*mqttFilter{{filter: "spBv1.0/plant1", qos: 0}}, []byte{0})
+	testMQTTSub(t, 1, c1, r1, []*mqttFilter{{filter: "spBv1.0/plant2", qos: 1}}, []byte{1})
+
+	c2, r2 := testMQTTConnect(t, &mqttConnInfo{user: "mqtt", pass: "pwd", clientID: "conn2", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer c2.Close()
+	testMQTTCheckConnAck(t, r2, mqttConnAckRCConnectionAccepted, false)
+
+	testMQTTPublish(t, c2, r2, 0, false, false, "spBv1.0/plant1", 0, []byte("msg1"))
+	testMQTTCheckPubMsg(t, c1, r1, "spBv1.0/plant1", 0, []byte("msg1"))
+	msg := natsNexMsg(t, sub, time.Second)
+	require_Equal(t, msg.Subject, "spBv1//0.plant1")
+
+	testMQTTPublish(t, c2, r2, 1, false, false, "spBv1.0/plant2", 1, []byte("msg2"))
+	testMQTTCheckPubMsg(t, c1, r1, "spBv1.0/plant2", mqttPubQos1, []byte("msg2"))
+	msg = natsNexMsg(t, sub, time.Second)
+	require_Equal(t, msg.Subject, "spBv1//0.plant2")
+
+	natsPub(t, nc, "spBv1//0.plant1", []byte("msg3"))
+	testMQTTCheckPubMsg(t, c1, r1, "spBv1.0/plant1", 0, []byte("msg3"))
+	msg = natsNexMsg(t, sub, time.Second)
+	require_Equal(t, msg.Subject, "spBv1//0.plant1")
+
+	natsPub(t, nc, "spBv1//0.plant2", []byte("msg4"))
+	testMQTTCheckPubMsg(t, c1, r1, "spBv1.0/plant2", 0, []byte("msg4"))
+	msg = natsNexMsg(t, sub, time.Second)
+	require_Equal(t, msg.Subject, "spBv1//0.plant2")
 }
 
 //////////////////////////////////////////////////////////////////////////
