@@ -43,6 +43,7 @@ type JetStreamConfig struct {
 	StoreDir   string `json:"store_dir,omitempty"`
 	Domain     string `json:"domain,omitempty"`
 	CompressOK bool   `json:"compress_ok,omitempty"`
+	UniqueTag  string `json:"unique_tag,omitempty"`
 }
 
 // Statistics about JetStream for this server.
@@ -178,10 +179,10 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 
 	s.Noticef("Starting JetStream")
 	if config == nil || config.MaxMemory <= 0 || config.MaxStore <= 0 {
-		var storeDir, domain string
+		var storeDir, domain, uniqueTag string
 		var maxStore, maxMem int64
 		if config != nil {
-			storeDir, domain = config.StoreDir, config.Domain
+			storeDir, domain, uniqueTag = config.StoreDir, config.Domain, config.UniqueTag
 			maxStore, maxMem = config.MaxStore, config.MaxMemory
 		}
 		config = s.dynJetStreamConfig(storeDir, maxStore, maxMem)
@@ -190,6 +191,9 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		}
 		if domain != _EMPTY_ {
 			config.Domain = domain
+		}
+		if uniqueTag != _EMPTY_ {
+			config.UniqueTag = uniqueTag
 		}
 		s.Debugf("JetStream creating dynamic configuration - %s memory, %s disk", friendlyBytes(config.MaxMemory), friendlyBytes(config.MaxStore))
 	} else if config.StoreDir != _EMPTY_ {
@@ -363,13 +367,16 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 		s.SetDefaultSystemAccount()
 	}
 
-	s.Noticef("    _ ___ _____ ___ _____ ___ ___   _   __  __")
-	s.Noticef(" _ | | __|_   _/ __|_   _| _ \\ __| /_\\ |  \\/  |")
-	s.Noticef("| || | _|  | | \\__ \\ | | |   / _| / _ \\| |\\/| |")
-	s.Noticef(" \\__/|___| |_| |___/ |_| |_|_\\___/_/ \\_\\_|  |_|")
-	s.Noticef("")
-	s.Noticef("         https://docs.nats.io/jetstream")
-	s.Noticef("")
+	opts := s.getOpts()
+	if !opts.DisableJetStreamBanner {
+		s.Noticef("    _ ___ _____ ___ _____ ___ ___   _   __  __")
+		s.Noticef(" _ | | __|_   _/ __|_   _| _ \\ __| /_\\ |  \\/  |")
+		s.Noticef("| || | _|  | | \\__ \\ | | |   / _| / _ \\| |\\/| |")
+		s.Noticef(" \\__/|___| |_| |___/ |_| |_|_\\___/_/ \\_\\_|  |_|")
+		s.Noticef("")
+		s.Noticef("         https://docs.nats.io/jetstream")
+		s.Noticef("")
+	}
 	s.Noticef("---------------- JETSTREAM ----------------")
 	s.Noticef("  Max Memory:      %s", friendlyBytes(cfg.MaxMemory))
 	s.Noticef("  Max Storage:     %s", friendlyBytes(cfg.MaxStore))
@@ -377,7 +384,7 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	if cfg.Domain != _EMPTY_ {
 		s.Noticef("  Domain:          %s", cfg.Domain)
 	}
-	opts := s.getOpts()
+
 	if ek := opts.JetStreamKey; ek != _EMPTY_ {
 		s.Noticef("  Encryption:      %s", opts.JetStreamCipher)
 	}
@@ -1038,9 +1045,12 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 	}
 
 	js.mu.Lock()
-	if _, ok := js.accounts[a.Name]; ok && a.JetStreamEnabled() {
+	if jsa, ok := js.accounts[a.Name]; ok {
+		a.mu.Lock()
+		a.js = jsa
+		a.mu.Unlock()
 		js.mu.Unlock()
-		return fmt.Errorf("jetstream already enabled for account")
+		return a.enableAllJetStreamServiceImportsAndMappings()
 	}
 
 	// Check the limits against existing reservations.
@@ -1065,12 +1075,11 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 	}
 
 	js.accounts[a.Name] = jsa
-	js.mu.Unlock()
-
-	// Stamp inside account as well.
+	// Stamp inside account as well. Needs to be done under js's lock.
 	a.mu.Lock()
 	a.js = jsa
 	a.mu.Unlock()
+	js.mu.Unlock()
 
 	// Create the proper imports here.
 	if err := a.enableAllJetStreamServiceImportsAndMappings(); err != nil {
@@ -2011,7 +2020,11 @@ func (js *jetStream) limitsExceeded(storeType StorageType) bool {
 
 func tierName(cfg *StreamConfig) string {
 	// TODO (mh) this is where we could select based off a placement tag as well "qos:tier"
-	return fmt.Sprintf("R%d", cfg.Replicas)
+	replicas := cfg.Replicas
+	if replicas == 0 {
+		replicas = 1
+	}
+	return fmt.Sprintf("R%d", replicas)
 }
 
 func isSameTier(cfgA, cfgB *StreamConfig) bool {
@@ -2721,7 +2734,7 @@ func friendlyBytes[T Number](bytes T) string {
 }
 
 func isValidName(name string) bool {
-	if name == "" {
+	if name == _EMPTY_ {
 		return false
 	}
 	return !strings.ContainsAny(name, " \t\r\n\f.*>")

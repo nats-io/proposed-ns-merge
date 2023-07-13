@@ -1266,7 +1266,7 @@ func TestAccountReqMonitoring(t *testing.T) {
 	// query SUBSZ for account
 	resp, err := ncSys.Request(subsz, nil, time.Second)
 	require_NoError(t, err)
-	require_Contains(t, string(resp.Data), `"num_subscriptions":4,`)
+	require_Contains(t, string(resp.Data), `"num_subscriptions":5,`)
 	// create a subscription
 	sub, err := nc.Subscribe("foo", func(msg *nats.Msg) {})
 	require_NoError(t, err)
@@ -1276,7 +1276,7 @@ func TestAccountReqMonitoring(t *testing.T) {
 	// query SUBSZ for account
 	resp, err = ncSys.Request(subsz, nil, time.Second)
 	require_NoError(t, err)
-	require_Contains(t, string(resp.Data), `"num_subscriptions":5,`, `"subject":"foo"`)
+	require_Contains(t, string(resp.Data), `"num_subscriptions":6,`, `"subject":"foo"`)
 	// query connections for account
 	resp, err = ncSys.Request(connz, nil, time.Second)
 	require_NoError(t, err)
@@ -1289,14 +1289,14 @@ func TestAccountReqMonitoring(t *testing.T) {
 	resp, err = ncSys.Request(statz(acc.Name), nil, time.Second)
 	require_NoError(t, err)
 	respContentAcc := []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"sent":{"msgs":0,"bytes":0}`,
-		`"received":{"msgs":0,"bytes":0}`, fmt.Sprintf(`"acc":"%s"`, acc.Name)}
+		`"received":{"msgs":0,"bytes":0}`, `"num_subscriptions":`, fmt.Sprintf(`"acc":"%s"`, acc.Name)}
 	require_Contains(t, string(resp.Data), respContentAcc...)
 
 	rIb := ncSys.NewRespInbox()
 	rSub, err := ncSys.SubscribeSync(rIb)
 	require_NoError(t, err)
 	require_NoError(t, ncSys.PublishRequest(pStatz, rIb, nil))
-	minRespContentForBothAcc := []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"acc":"`}
+	minRespContentForBothAcc := []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"acc":"`, `"num_subscriptions":`}
 	resp, err = rSub.NextMsg(time.Second)
 	require_NoError(t, err)
 	require_Contains(t, string(resp.Data), minRespContentForBothAcc...)
@@ -1419,7 +1419,7 @@ func TestAccountReqInfo(t *testing.T) {
 		t.Fatalf("Unmarshalling failed: %v", err)
 	} else if len(info.Exports) != 1 {
 		t.Fatalf("Unexpected value: %v", info.Exports)
-	} else if len(info.Imports) != 3 {
+	} else if len(info.Imports) != 4 {
 		t.Fatalf("Unexpected value: %+v", info.Imports)
 	} else if info.Exports[0].Subject != "req.*" {
 		t.Fatalf("Unexpected value: %v", info.Exports)
@@ -1427,7 +1427,7 @@ func TestAccountReqInfo(t *testing.T) {
 		t.Fatalf("Unexpected value: %v", info.Exports)
 	} else if info.Exports[0].ResponseType != jwt.ResponseTypeSingleton {
 		t.Fatalf("Unexpected value: %v", info.Exports)
-	} else if info.SubCnt != 3 {
+	} else if info.SubCnt != 4 {
 		t.Fatalf("Unexpected value: %v", info.SubCnt)
 	} else {
 		checkCommon(&info, &srv, pub1, ajwt1)
@@ -1440,7 +1440,7 @@ func TestAccountReqInfo(t *testing.T) {
 		t.Fatalf("Unmarshalling failed: %v", err)
 	} else if len(info.Exports) != 0 {
 		t.Fatalf("Unexpected value: %v", info.Exports)
-	} else if len(info.Imports) != 4 {
+	} else if len(info.Imports) != 5 {
 		t.Fatalf("Unexpected value: %+v", info.Imports)
 	}
 	// Here we need to find our import
@@ -1458,7 +1458,7 @@ func TestAccountReqInfo(t *testing.T) {
 		t.Fatalf("Unexpected value: %+v", si)
 	} else if si.Account != pub1 {
 		t.Fatalf("Unexpected value: %+v", si)
-	} else if info.SubCnt != 4 {
+	} else if info.SubCnt != 5 {
 		t.Fatalf("Unexpected value: %+v", si)
 	} else {
 		checkCommon(&info, &srv, pub2, ajwt2)
@@ -1666,7 +1666,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 
 	// If this tests fails with wrong number after 10 seconds we may have
 	// added a new inititial subscription for the eventing system.
-	checkExpectedSubs(t, 45, sa)
+	checkExpectedSubs(t, 52, sa)
 
 	// Create a client on B and see if we receive the event
 	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
@@ -1680,12 +1680,10 @@ func TestSystemAccountWithGateways(t *testing.T) {
 	require_NoError(t, err)
 	msgs[1], err = sub.NextMsg(time.Second)
 	require_NoError(t, err)
-	msgs[2], err = sub.NextMsg(time.Second)
-	require_NoError(t, err)
 	// TODO: There is a race currently that can cause the server to process the
 	// system event *after* the subscription on "A" has been registered, and so
 	// the "nca" client would receive its own CONNECT message.
-	msgs[3], _ = sub.NextMsg(250 * time.Millisecond)
+	msgs[2], _ = sub.NextMsg(250 * time.Millisecond)
 
 	findMsgs := func(sub string) []*nats.Msg {
 		rMsgs := []*nats.Msg{}
@@ -1713,10 +1711,6 @@ func TestSystemAccountWithGateways(t *testing.T) {
 
 	connsMsgA := findMsgs(fmt.Sprintf("$SYS.ACCOUNT.%s.SERVER.CONNS", sa.SystemAccount().Name))
 	if len(connsMsgA) != 1 {
-		t.Fatal("Expected a message")
-	}
-	connsMsgG := findMsgs("$SYS.ACCOUNT.$G.SERVER.CONNS")
-	if len(connsMsgG) != 1 {
 		t.Fatal("Expected a message")
 	}
 }
@@ -1894,8 +1888,10 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m.Stats.Received.Msgs < 1 {
 		t.Fatalf("Did not match received msgs of >=1, got %d", m.Stats.Received.Msgs)
 	}
-	if lr := len(m.Stats.Routes); lr != 1 {
-		t.Fatalf("Expected a route, but got %d", lr)
+	// Default pool size + 1 for system account
+	expectedRoutes := DEFAULT_ROUTE_POOL_SIZE + 1
+	if lr := len(m.Stats.Routes); lr != expectedRoutes {
+		t.Fatalf("Expected %d routes, but got %d", expectedRoutes, lr)
 	}
 
 	// Now let's prompt this server to send us the statsz
@@ -1923,8 +1919,8 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m2.Stats.Received.Msgs < 1 {
 		t.Fatalf("Did not match received msgs of >= 1, got %d", m2.Stats.Received.Msgs)
 	}
-	if lr := len(m2.Stats.Routes); lr != 1 {
-		t.Fatalf("Expected a route, but got %d", lr)
+	if lr := len(m2.Stats.Routes); lr != expectedRoutes {
+		t.Fatalf("Expected %d routes, but got %d", expectedRoutes, lr)
 	}
 
 	msg, err = ncs.Request(subj, nil, time.Second)
@@ -1950,11 +1946,13 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m3.Stats.Received.Msgs < 2 {
 		t.Fatalf("Did not match received msgs of >= 2, got %d", m3.Stats.Received.Msgs)
 	}
-	if lr := len(m3.Stats.Routes); lr != 1 {
-		t.Fatalf("Expected a route, but got %d", lr)
+	if lr := len(m3.Stats.Routes); lr != expectedRoutes {
+		t.Fatalf("Expected %d routes, but got %d", expectedRoutes, lr)
 	}
-	if sr := m3.Stats.Routes[0]; sr.Name != "B_SRV" {
-		t.Fatalf("Expected server A's route to B to have Name set to %q, got %q", "B", sr.Name)
+	for _, sr := range m3.Stats.Routes {
+		if sr.Name != "B_SRV" {
+			t.Fatalf("Expected server A's route to B to have Name set to %q, got %q", "B", sr.Name)
+		}
 	}
 
 	// Now query B and check that route's name is "A"
@@ -1968,11 +1966,13 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if err := json.Unmarshal(msg.Data, &m); err != nil {
 		t.Fatalf("Error unmarshalling the statz json: %v", err)
 	}
-	if lr := len(m.Stats.Routes); lr != 1 {
-		t.Fatalf("Expected a route, but got %d", lr)
+	if lr := len(m.Stats.Routes); lr != expectedRoutes {
+		t.Fatalf("Expected %d routes, but got %d", expectedRoutes, lr)
 	}
-	if sr := m.Stats.Routes[0]; sr.Name != "A_SRV" {
-		t.Fatalf("Expected server B's route to A to have Name set to %q, got %q", "A_SRV", sr.Name)
+	for _, sr := range m.Stats.Routes {
+		if sr.Name != "A_SRV" {
+			t.Fatalf("Expected server B's route to A to have Name set to %q, got %q", "A_SRV", sr.Name)
+		}
 	}
 }
 

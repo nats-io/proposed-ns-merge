@@ -23,6 +23,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -112,7 +113,7 @@ const (
 
 	// Stream name for MQTT retained messages on a given account
 	mqttRetainedMsgsStreamName    = mqttStreamNamePrefix + "rmsgs"
-	mqttRetainedMsgsStreamSubject = "$MQTT.rmsgs"
+	mqttRetainedMsgsStreamSubject = "$MQTT.rmsgs."
 
 	// Stream name for MQTT sessions on a given account
 	mqttSessStreamName          = mqttStreamNamePrefix + "sess"
@@ -145,6 +146,7 @@ const (
 	mqttJSAIdTokenPos     = 3
 	mqttJSATokenPos       = 4
 	mqttJSAStreamCreate   = "SC"
+	mqttJSAStreamUpdate   = "SU"
 	mqttJSAStreamLookup   = "SL"
 	mqttJSAStreamDel      = "SD"
 	mqttJSAConsumerCreate = "CC"
@@ -220,13 +222,13 @@ type mqttSessionManager struct {
 
 type mqttAccountSessionManager struct {
 	mu         sync.RWMutex
-	sessions   map[string]*mqttSession     // key is MQTT client ID
-	sessByHash map[string]*mqttSession     // key is MQTT client ID hash
-	sessLocked map[string]struct{}         // key is MQTT client ID and indicate that a session can not be taken by a new client at this time
-	flappers   map[string]int64            // When connection connects with client ID already in use
-	flapTimer  *time.Timer                 // Timer to perform some cleanup of the flappers map
-	sl         *Sublist                    // sublist allowing to find retained messages for given subscription
-	retmsgs    map[string]*mqttRetainedMsg // retained messages
+	sessions   map[string]*mqttSession        // key is MQTT client ID
+	sessByHash map[string]*mqttSession        // key is MQTT client ID hash
+	sessLocked map[string]struct{}            // key is MQTT client ID and indicate that a session can not be taken by a new client at this time
+	flappers   map[string]int64               // When connection connects with client ID already in use
+	flapTimer  *time.Timer                    // Timer to perform some cleanup of the flappers map
+	sl         *Sublist                       // sublist allowing to find retained messages for given subscription
+	retmsgs    map[string]*mqttRetainedMsgRef // retained messages
 	jsa        mqttJSA
 	rrmLastSeq uint64           // Restore retained messages expected last sequence
 	rrmDoneCh  chan struct{}    // To notify the caller that all retained messages have been loaded
@@ -292,8 +294,9 @@ type mqttRetainedMsg struct {
 	Msg     []byte `json:"msg,omitempty"`
 	Flags   byte   `json:"flags,omitempty"`
 	Source  string `json:"source,omitempty"`
+}
 
-	// non exported
+type mqttRetainedMsgRef struct {
 	sseq  uint64
 	floor uint64
 	sub   *subscription
@@ -497,7 +500,7 @@ func (s *Server) createMQTTClient(conn net.Conn, ws *websocket) *client {
 		}
 
 		// Perform server-side TLS handshake.
-		if err := c.doTLSServerHandshake("mqtt", opts.MQTT.TLSConfig, opts.MQTT.TLSTimeout, opts.MQTT.TLSPinnedCerts); err != nil {
+		if err := c.doTLSServerHandshake(tlsHandshakeMQTT, opts.MQTT.TLSConfig, opts.MQTT.TLSTimeout, opts.MQTT.TLSPinnedCerts); err != nil {
 			c.mu.Unlock()
 			return nil
 		}
@@ -1150,11 +1153,12 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	} else if si == nil {
 		// Create the stream for retained messages.
 		cfg := &StreamConfig{
-			Name:      mqttRetainedMsgsStreamName,
-			Subjects:  []string{mqttRetainedMsgsStreamSubject},
-			Storage:   FileStorage,
-			Retention: LimitsPolicy,
-			Replicas:  replicas,
+			Name:       mqttRetainedMsgsStreamName,
+			Subjects:   []string{mqttRetainedMsgsStreamSubject + as.domainTk + ">"},
+			Storage:    FileStorage,
+			Retention:  LimitsPolicy,
+			Replicas:   replicas,
+			MaxMsgsPer: 1,
 		}
 		// We will need "si" outside of this block.
 		si, _, err = jsa.createStream(cfg)
@@ -1167,6 +1171,39 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 			si, err = lookupStream(mqttRetainedMsgsStreamName, "retained messages")
 			if err != nil {
 				return nil, err
+			}
+		}
+	}
+	// Doing this check outside of above if/else due to possible race when
+	// creating the stream.
+	wantedSubj := mqttRetainedMsgsStreamSubject + as.domainTk + ">"
+	if len(si.Config.Subjects) != 1 || si.Config.Subjects[0] != wantedSubj {
+		// Update only the Subjects at this stage, not MaxMsgsPer yet.
+		si.Config.Subjects = []string{wantedSubj}
+		if si, err = jsa.updateStream(&si.Config); err != nil {
+			return nil, fmt.Errorf("failed to update stream config: %w", err)
+		}
+	}
+	// Try to transfer regardless if we have already updated the stream or not
+	// in case not all messages were transferred and the server was restarted.
+	if as.transferRetainedToPerKeySubjectStream(s) {
+		// We need another lookup to have up-to-date si.State values in order
+		// to load all retained messages.
+		si, err = lookupStream(mqttRetainedMsgsStreamName, "retained messages")
+		if err != nil {
+			return nil, err
+		}
+	}
+	// Now, if the stream does not have MaxMsgsPer set to 1, and there are no
+	// more messages on the single $MQTT.rmsgs subject, update the stream again.
+	if si.Config.MaxMsgsPer != 1 {
+		_, err := jsa.loadNextMsgFor(mqttRetainedMsgsStreamName, "$MQTT.rmsgs")
+		// Looking for an error indicated that there is no such message.
+		if err != nil && IsNatsErr(err, JSNoMessageFoundErr) {
+			si.Config.MaxMsgsPer = 1
+			// We will need an up-to-date si, so don't use local variable here.
+			if si, err = jsa.updateStream(&si.Config); err != nil {
+				return nil, fmt.Errorf("failed to update stream config: %w", err)
 			}
 		}
 	}
@@ -1199,7 +1236,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		Stream: mqttRetainedMsgsStreamName,
 		Config: ConsumerConfig{
 			Durable:        rmDurName,
-			FilterSubject:  mqttRetainedMsgsStreamSubject,
+			FilterSubject:  mqttRetainedMsgsStreamSubject + as.domainTk + ">",
 			DeliverSubject: rmsubj,
 			ReplayPolicy:   ReplayInstant,
 			AckPolicy:      AckNone,
@@ -1353,6 +1390,19 @@ func (jsa *mqttJSA) createStream(cfg *StreamConfig) (*StreamInfo, bool, error) {
 	return scr.StreamInfo, scr.DidCreate, scr.ToError()
 }
 
+func (jsa *mqttJSA) updateStream(cfg *StreamConfig) (*StreamInfo, error) {
+	cfgb, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	scri, err := jsa.newRequest(mqttJSAStreamUpdate, fmt.Sprintf(JSApiStreamUpdateT, cfg.Name), 0, cfgb)
+	if err != nil {
+		return nil, err
+	}
+	scr := scri.(*JSApiStreamUpdateResponse)
+	return scr.StreamInfo, scr.ToError()
+}
+
 func (jsa *mqttJSA) lookupStream(name string) (*StreamInfo, error) {
 	slri, err := jsa.newRequest(mqttJSAStreamLookup, fmt.Sprintf(JSApiStreamInfoT, name), 0, nil)
 	if err != nil {
@@ -1373,6 +1423,20 @@ func (jsa *mqttJSA) deleteStream(name string) (bool, error) {
 
 func (jsa *mqttJSA) loadLastMsgFor(streamName string, subject string) (*StoredMsg, error) {
 	mreq := &JSApiMsgGetRequest{LastFor: subject}
+	req, err := json.Marshal(mreq)
+	if err != nil {
+		return nil, err
+	}
+	lmri, err := jsa.newRequest(mqttJSAMsgLoad, fmt.Sprintf(JSApiMsgGetT, streamName), 0, req)
+	if err != nil {
+		return nil, err
+	}
+	lmr := lmri.(*JSApiMsgGetResponse)
+	return lmr.Message, lmr.ToError()
+}
+
+func (jsa *mqttJSA) loadNextMsgFor(streamName string, subject string) (*StoredMsg, error) {
+	mreq := &JSApiMsgGetRequest{NextFor: subject}
 	req, err := json.Marshal(mreq)
 	if err != nil {
 		return nil, err
@@ -1464,6 +1528,12 @@ func (as *mqttAccountSessionManager) processJSAPIReplies(_ *subscription, pc *cl
 			resp.Error = NewJSInvalidJSONError()
 		}
 		ch <- resp
+	case mqttJSAStreamUpdate:
+		var resp = &JSApiStreamUpdateResponse{}
+		if err := json.Unmarshal(msg, resp); err != nil {
+			resp.Error = NewJSInvalidJSONError()
+		}
+		ch <- resp
 	case mqttJSAStreamLookup:
 		var resp = &JSApiStreamInfoResponse{}
 		if err := json.Unmarshal(msg, &resp); err != nil {
@@ -1536,8 +1606,9 @@ func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *clie
 	seq, _, _ := ackReplyInfo(reply)
 
 	// Handle this retained message
-	rm.sseq = seq
-	as.handleRetainedMsg(rm.Subject, rm)
+	rf := &mqttRetainedMsgRef{}
+	rf.sseq = seq
+	as.handleRetainedMsg(rm.Subject, rf)
 
 	// If we were recovering (lastSeq > 0), then check if we are done.
 	if as.rrmLastSeq > 0 && seq >= as.rrmLastSeq {
@@ -1805,11 +1876,11 @@ func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, acc
 // or 0 if the record was added instead of updated.
 //
 // Lock not held on entry.
-func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rm *mqttRetainedMsg) uint64 {
+func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rm *mqttRetainedMsgRef) {
 	as.mu.Lock()
 	defer as.mu.Unlock()
 	if as.retmsgs == nil {
-		as.retmsgs = make(map[string]*mqttRetainedMsg)
+		as.retmsgs = make(map[string]*mqttRetainedMsgRef)
 		as.sl = NewSublistWithCache()
 	} else {
 		// Check if we already had one. If so, update the existing one.
@@ -1817,15 +1888,9 @@ func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rm *mqttRetai
 			// If the new sequence is below the floor or the existing one,
 			// then ignore the new one.
 			if rm.sseq <= erm.sseq || rm.sseq <= erm.floor {
-				return 0
+				return
 			}
-			// Update the existing retained message record with the new rm record.
-			erm.Origin = rm.Origin
-			erm.Msg = rm.Msg
-			erm.Flags = rm.Flags
-			erm.Source = rm.Source
 			// Capture existing sequence number so we can return it as the old sequence.
-			oldSeq := erm.sseq
 			erm.sseq = rm.sseq
 			// Clear the floor
 			erm.floor = 0
@@ -1835,13 +1900,11 @@ func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rm *mqttRetai
 				erm.sub = &subscription{subject: []byte(key)}
 				as.sl.Insert(erm.sub)
 			}
-			return oldSeq
 		}
 	}
 	rm.sub = &subscription{subject: []byte(key)}
 	as.retmsgs[key] = rm
 	as.sl.Insert(rm.sub)
-	return 0
 }
 
 // Removes the retained message for the given `subject` if present, and returns the
@@ -1854,7 +1917,7 @@ func (as *mqttAccountSessionManager) handleRetainedMsgDel(subject string, seq ui
 	var seqToRemove uint64
 	as.mu.Lock()
 	if as.retmsgs == nil {
-		as.retmsgs = make(map[string]*mqttRetainedMsg)
+		as.retmsgs = make(map[string]*mqttRetainedMsgRef)
 		as.sl = NewSublistWithCache()
 	}
 	if erm, ok := as.retmsgs[subject]; ok {
@@ -1873,8 +1936,8 @@ func (as *mqttAccountSessionManager) handleRetainedMsgDel(subject string, seq ui
 			seqToRemove = erm.sseq
 		}
 	} else if seq != 0 {
-		rm := &mqttRetainedMsg{Subject: subject, floor: seq}
-		as.retmsgs[subject] = rm
+		rf := &mqttRetainedMsgRef{floor: seq}
+		as.retmsgs[subject] = rf
 	}
 	as.mu.Unlock()
 	return seqToRemove
@@ -2125,11 +2188,16 @@ func (as *mqttAccountSessionManager) getRetainedPublishMsgs(subject string, rms 
 		return
 	}
 	for _, sub := range result.psubs {
-		// Since this is a reverse match, the subscription objects here
-		// contain literals corresponding to the published subjects.
-		if rm, ok := as.retmsgs[string(sub.subject)]; ok {
-			*rms = append(*rms, rm)
+		subj := mqttRetainedMsgsStreamSubject + as.domainTk + string(sub.subject)
+		jsm, err := as.jsa.loadLastMsgFor(mqttRetainedMsgsStreamName, subj)
+		if err != nil || jsm == nil {
+			continue
 		}
+		var rm mqttRetainedMsg
+		if err := json.Unmarshal(jsm.Data, &rm); err != nil {
+			continue
+		}
+		*rms = append(*rms, &rm)
 	}
 }
 
@@ -2258,6 +2326,56 @@ func (as *mqttAccountSessionManager) transferUniqueSessStreamsToMuxed(log *Serve
 	}
 	log.Noticef("Transfer of %v MQTT session streams done!", ns)
 	retry = false
+}
+
+func (as *mqttAccountSessionManager) transferRetainedToPerKeySubjectStream(log *Server) bool {
+	jsa := &as.jsa
+	var count, errors int
+
+	for {
+		// Try and look up messages on the original undivided "$MQTT.rmsgs" subject.
+		// If nothing is returned here, we assume to have migrated all old messages.
+		smsg, err := jsa.loadNextMsgFor(mqttRetainedMsgsStreamName, "$MQTT.rmsgs")
+		if err != nil {
+			if IsNatsErr(err, JSNoMessageFoundErr) {
+				// We've ran out of messages to transfer so give up.
+				break
+			}
+			log.Warnf("    Unable to load retained message with sequence %d: %s", smsg.Sequence, err)
+			errors++
+			break
+		}
+		// Unmarshal the message so that we can obtain the subject name.
+		var rmsg mqttRetainedMsg
+		if err := json.Unmarshal(smsg.Data, &rmsg); err != nil {
+			log.Warnf("    Unable to unmarshal retained message with sequence %d, skipping", smsg.Sequence)
+			errors++
+			continue
+		}
+		// Store the message again, this time with the new per-key subject.
+		subject := mqttRetainedMsgsStreamSubject + as.domainTk + rmsg.Subject
+		if _, err := jsa.storeMsgWithKind(mqttJSASessPersist, subject, 0, smsg.Data); err != nil {
+			log.Errorf("    Unable to transfer the retained message with sequence %d: %v", smsg.Sequence, err)
+			errors++
+			continue
+		}
+		// Delete the original message.
+		if err := jsa.deleteMsg(mqttRetainedMsgsStreamName, smsg.Sequence, true); err != nil {
+			log.Errorf("    Unable to clean up the retained message with sequence %d: %v", smsg.Sequence, err)
+			errors++
+			continue
+		}
+		count++
+	}
+	if errors > 0 {
+		next := mqttDefaultTransferRetry
+		log.Warnf("Failed to transfer %d MQTT retained messages, will try again in %v", errors, next)
+		time.AfterFunc(next, func() { as.transferRetainedToPerKeySubjectStream(log) })
+	} else if count > 0 {
+		log.Noticef("Transfer of %d MQTT retained messages done!", count)
+	}
+	// Signal if there was any activity (either some transferred or some errors)
+	return errors > 0 || count > 0
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -3047,6 +3165,13 @@ func (s *Server) mqttProcessPub(c *client, pp *mqttPublish) error {
 	// Unless we have a publish permission error, if the message is QoS1, then we
 	// need to store the message (and deliver it to JS durable consumers).
 	if _, permIssue := c.processInboundClientMsg(msgToSend); !permIssue && mqttGetQoS(pp.flags) > 0 {
+		// We need to call flushClients now since this we may have called c.addToPCD
+		// with destination clients (possibly a route). Without calling flushClients
+		// the following call may then be stuck waiting for a reply that may never
+		// come because the destination is not flushed (due to c.out.fsp > 0,
+		// see addToPCD and writeLoop for details).
+		c.flushClients(0)
+		// Store this QoS1 message.
 		_, err = c.mqtt.sess.jsa.storeMsg(mqttStreamSubjectPrefix+string(c.pa.subject), c.pa.hdr, msgToSend)
 	}
 	c.pa.subject, c.pa.mapped, c.pa.hdr, c.pa.size, c.pa.szb, c.pa.reply = nil, nil, -1, 0, nil, nil
@@ -3085,16 +3210,14 @@ func (c *client) mqttHandlePubRetain() {
 			Source:  c.opts.Username,
 		}
 		rmBytes, _ := json.Marshal(rm)
-		smr, err := asm.jsa.storeMsg(mqttRetainedMsgsStreamSubject, -1, rmBytes)
+		smr, err := asm.jsa.storeMsg(mqttRetainedMsgsStreamSubject+asm.domainTk+key, -1, rmBytes)
 		if err == nil {
 			// Update the new sequence
-			rm.sseq = smr.Sequence
-			// Add/update the map
-			oldSeq := asm.handleRetainedMsg(key, rm)
-			// If this is a new message on the same subject, delete the old one.
-			if oldSeq != 0 {
-				asm.deleteRetainedMsg(oldSeq)
+			rf := &mqttRetainedMsgRef{
+				sseq: smr.Sequence,
 			}
+			// Add/update the map
+			asm.handleRetainedMsg(key, rf)
 		} else {
 			c.mu.Lock()
 			acc := c.acc
@@ -3131,14 +3254,50 @@ func (s *Server) mqttCheckPubRetainedPerms() {
 	}
 	s.mu.Unlock()
 
+	// First get a list of all of the sessions.
 	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
+	asms := make([]*mqttAccountSessionManager, 0, len(sm.sessions))
 	for _, asm := range sm.sessions {
+		asms = append(asms, asm)
+	}
+	sm.mu.RUnlock()
+
+	type retainedMsg struct {
+		subj string
+		rmsg *mqttRetainedMsgRef
+	}
+
+	// For each session we will obtain a list of retained messages.
+	var _rms [128]retainedMsg
+	rms := _rms[:0]
+	for _, asm := range asms {
+		// Get all of the retained messages. Then we will sort them so
+		// that they are in sequence order, which should help the file
+		// store to not have to load out-of-order blocks so often.
+		asm.mu.RLock()
+		rms = rms[:0] // reuse slice
+		for subj, rf := range asm.retmsgs {
+			rms = append(rms, retainedMsg{
+				subj: subj,
+				rmsg: rf,
+			})
+		}
+		asm.mu.RUnlock()
+		sort.Slice(rms, func(i, j int) bool {
+			return rms[i].rmsg.sseq < rms[j].rmsg.sseq
+		})
+
 		perms := map[string]*perm{}
 		deletes := map[string]uint64{}
-		asm.mu.Lock()
-		for subject, rm := range asm.retmsgs {
+		for _, rf := range rms {
+			jsm, err := asm.jsa.loadMsg(mqttRetainedMsgsStreamName, rf.rmsg.sseq)
+			if err != nil || jsm == nil {
+				continue
+			}
+			var rm mqttRetainedMsg
+			if err := json.Unmarshal(jsm.Data, &rm); err != nil {
+				continue
+			}
 			if rm.Source == _EMPTY_ {
 				continue
 			}
@@ -3152,7 +3311,7 @@ func (s *Server) mqttCheckPubRetainedPerms() {
 				}
 				// If there is permission and no longer allowed to publish in
 				// the subject, remove the publish retained message from the map.
-				if p != nil && !pubAllowed(p, subject) {
+				if p != nil && !pubAllowed(p, rf.subj) {
 					u = nil
 				}
 			}
@@ -3160,12 +3319,14 @@ func (s *Server) mqttCheckPubRetainedPerms() {
 			// Not present or permissions have changed such that the source can't
 			// publish on that subject anymore: remove it from the map.
 			if u == nil {
-				delete(asm.retmsgs, subject)
-				asm.sl.Remove(rm.sub)
-				deletes[subject] = rm.sseq
+				asm.mu.Lock()
+				delete(asm.retmsgs, rf.subj)
+				asm.sl.Remove(rf.rmsg.sub)
+				asm.mu.Unlock()
+				deletes[rf.subj] = rf.rmsg.sseq
 			}
 		}
-		asm.mu.Unlock()
+
 		for subject, seq := range deletes {
 			asm.deleteRetainedMsg(seq)
 			asm.notifyRetainedMsgDeleted(subject, seq)
@@ -3954,7 +4115,8 @@ func mqttFilterToNATSSubject(filter []byte) ([]byte, error) {
 //   - '/' is replaced with './' if the last or next character in mt is '/'
 //     For instance, foo//bar would become foo./.bar
 //   - '/' is replaced with '.' for all other conditions (foo/bar -> foo.bar)
-//   - '.' and ' ' cause an error to be returned.
+//   - '.' is replaced with '//'.
+//   - ' ' cause an error to be returned.
 //
 // If there is no need to convert anything (say "foo" remains "foo"), then
 // the no memory is allocated and the returned slice is the original `mt`.
@@ -3993,9 +4155,15 @@ func mqttToNATSSubjectConversion(mt []byte, wcOk bool) ([]byte, error) {
 				}
 				res = append(res, btsep)
 			}
-		case btsep, ' ':
-			// As of now, we cannot support '.' or ' ' in the MQTT topic/filter.
+		case ' ':
+			// As of now, we cannot support ' ' in the MQTT topic/filter.
 			return nil, errMQTTUnsupportedCharacters
+		case btsep:
+			if !cp {
+				makeCopy(i)
+			}
+			res = append(res, mqttTopicLevelSep, mqttTopicLevelSep)
+			j++
 		case mqttSingleLevelWC, mqttMultiLevelWC:
 			if !wcOk {
 				// Spec [MQTT-3.3.2-2] and [MQTT-4.7.1-1]
@@ -4034,16 +4202,22 @@ func natsSubjectToMQTTTopic(subject string) []byte {
 	for i := 0; i < len(subject); i++ {
 		switch subject[i] {
 		case mqttTopicLevelSep:
-			if !(i == 0 && i < end && subject[i+1] == btsep) {
-				topic[j] = mqttTopicLevelSep
-				j++
+			if i < end {
+				switch c := subject[i+1]; c {
+				case btsep, mqttTopicLevelSep:
+					if c == btsep {
+						topic[j] = mqttTopicLevelSep
+					} else {
+						topic[j] = btsep
+					}
+					j++
+					i++
+				default:
+				}
 			}
 		case btsep:
 			topic[j] = mqttTopicLevelSep
 			j++
-			if i < end && subject[i+1] == mqttTopicLevelSep {
-				i++
-			}
 		default:
 			topic[j] = subject[i]
 			j++

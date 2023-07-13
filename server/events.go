@@ -48,20 +48,25 @@ const (
 	accPingReqSubj      = "$SYS.REQ.ACCOUNT.PING.%s" // atm. only used for STATZ and CONNZ import from system account
 	// kept for backward compatibility when using http resolver
 	// this overlaps with the names for events but you'd have to have the operator private key in order to succeed.
-	accUpdateEventSubjOld    = "$SYS.ACCOUNT.%s.CLAIMS.UPDATE"
-	accUpdateEventSubjNew    = "$SYS.REQ.ACCOUNT.%s.CLAIMS.UPDATE"
-	connsRespSubj            = "$SYS._INBOX_.%s"
-	accConnsEventSubjNew     = "$SYS.ACCOUNT.%s.SERVER.CONNS"
-	accConnsEventSubjOld     = "$SYS.SERVER.ACCOUNT.%s.CONNS" // kept for backward compatibility
-	shutdownEventSubj        = "$SYS.SERVER.%s.SHUTDOWN"
-	authErrorEventSubj       = "$SYS.SERVER.%s.CLIENT.AUTH.ERR"
-	serverStatsSubj          = "$SYS.SERVER.%s.STATSZ"
-	serverDirectReqSubj      = "$SYS.REQ.SERVER.%s.%s"
-	serverPingReqSubj        = "$SYS.REQ.SERVER.PING.%s"
-	serverStatsPingReqSubj   = "$SYS.REQ.SERVER.PING"             // use $SYS.REQ.SERVER.PING.STATSZ instead
-	leafNodeConnectEventSubj = "$SYS.ACCOUNT.%s.LEAFNODE.CONNECT" // for internal use only
-	remoteLatencyEventSubj   = "$SYS.LATENCY.M2.%s"
-	inboxRespSubj            = "$SYS._INBOX.%s.%s"
+	accUpdateEventSubjOld     = "$SYS.ACCOUNT.%s.CLAIMS.UPDATE"
+	accUpdateEventSubjNew     = "$SYS.REQ.ACCOUNT.%s.CLAIMS.UPDATE"
+	connsRespSubj             = "$SYS._INBOX_.%s"
+	accConnsEventSubjNew      = "$SYS.ACCOUNT.%s.SERVER.CONNS"
+	accConnsEventSubjOld      = "$SYS.SERVER.ACCOUNT.%s.CONNS" // kept for backward compatibility
+	shutdownEventSubj         = "$SYS.SERVER.%s.SHUTDOWN"
+	authErrorEventSubj        = "$SYS.SERVER.%s.CLIENT.AUTH.ERR"
+	authErrorAccountEventSubj = "$SYS.ACCOUNT.CLIENT.AUTH.ERR"
+	serverStatsSubj           = "$SYS.SERVER.%s.STATSZ"
+	serverDirectReqSubj       = "$SYS.REQ.SERVER.%s.%s"
+	serverPingReqSubj         = "$SYS.REQ.SERVER.PING.%s"
+	serverStatsPingReqSubj    = "$SYS.REQ.SERVER.PING"             // use $SYS.REQ.SERVER.PING.STATSZ instead
+	leafNodeConnectEventSubj  = "$SYS.ACCOUNT.%s.LEAFNODE.CONNECT" // for internal use only
+	remoteLatencyEventSubj    = "$SYS.LATENCY.M2.%s"
+	inboxRespSubj             = "$SYS._INBOX.%s.%s"
+
+	// Used to return information to a user on bound account and user permissions.
+	userDirectInfoSubj = "$SYS.REQ.USER.INFO"
+	userDirectReqSubj  = "$SYS.REQ.USER.%s.INFO"
 
 	// FIXME(dlc) - Should account scope, even with wc for now, but later on
 	// we can then shard as needed.
@@ -166,6 +171,7 @@ type AccountStat struct {
 	Conns         int       `json:"conns"`
 	LeafNodes     int       `json:"leafnodes"`
 	TotalConns    int       `json:"total_conns"`
+	NumSubs       uint32    `json:"num_subscriptions"`
 	Sent          DataStats `json:"sent"`
 	Received      DataStats `json:"received"`
 	SlowConsumers int64     `json:"slow_consumers"`
@@ -180,18 +186,60 @@ type accNumConnsReq struct {
 	Account string     `json:"acc"`
 }
 
+// ServerID is basic static info for a server.
+type ServerID struct {
+	Name string `json:"name"`
+	Host string `json:"host"`
+	ID   string `json:"id"`
+}
+
+// Type for our server capabilities.
+type ServerCapability uint64
+
 // ServerInfo identifies remote servers.
 type ServerInfo struct {
-	Name      string    `json:"name"`
-	Host      string    `json:"host"`
-	ID        string    `json:"id"`
-	Cluster   string    `json:"cluster,omitempty"`
-	Domain    string    `json:"domain,omitempty"`
-	Version   string    `json:"ver"`
-	Tags      []string  `json:"tags,omitempty"`
-	Seq       uint64    `json:"seq"`
-	JetStream bool      `json:"jetstream"`
-	Time      time.Time `json:"time"`
+	Name    string   `json:"name"`
+	Host    string   `json:"host"`
+	ID      string   `json:"id"`
+	Cluster string   `json:"cluster,omitempty"`
+	Domain  string   `json:"domain,omitempty"`
+	Version string   `json:"ver"`
+	Tags    []string `json:"tags,omitempty"`
+	// Whether JetStream is enabled (deprecated in favor of the `ServerCapability`).
+	JetStream bool `json:"jetstream"`
+	// Generic capability flags
+	Flags ServerCapability
+	// Sequence and Time from the remote server for this message.
+	Seq  uint64    `json:"seq"`
+	Time time.Time `json:"time"`
+}
+
+const (
+	JetStreamEnabled     ServerCapability = 1 << iota // Server had JetStream enabled.
+	BinaryStreamSnapshot                              // New stream snapshot capability.
+)
+
+// Set JetStream capability.
+func (si *ServerInfo) SetJetStreamEnabled() {
+	si.Flags |= JetStreamEnabled
+	// Still set old version.
+	si.JetStream = true
+}
+
+// JetStreamEnabled indicates whether or not we have JetStream enabled.
+func (si *ServerInfo) JetStreamEnabled() bool {
+	// Take into account old version.
+	return si.Flags&JetStreamEnabled != 0 || si.JetStream
+}
+
+// Set binary stream snapshot capability.
+func (si *ServerInfo) SetBinaryStreamSnapshot() {
+	si.Flags |= BinaryStreamSnapshot
+}
+
+// JetStreamEnabled indicates whether or not we have binary stream snapshot capbilities.
+func (si *ServerInfo) BinaryStreamSnapshot() bool {
+	return si.Flags&BinaryStreamSnapshot != 0
 }
 
 // ClientInfo is detailed information about the client forming a connection.
@@ -199,7 +247,7 @@ type ClientInfo struct {
 	Start      *time.Time    `json:"start,omitempty"`
 	Host       string        `json:"host,omitempty"`
 	ID         uint64        `json:"id,omitempty"`
-	Account    string        `json:"acc"`
+	Account    string        `json:"acc,omitempty"`
 	Service    string        `json:"svc,omitempty"`
 	User       string        `json:"user,omitempty"`
 	Name       string        `json:"name,omitempty"`
@@ -217,6 +265,7 @@ type ClientInfo struct {
 	Kind       string        `json:"kind,omitempty"`
 	ClientType string        `json:"client_type,omitempty"`
 	MQTTClient string        `json:"client_id,omitempty"` // This is the MQTT client ID
+	Nonce      string        `json:"nonce,omitempty"`
 }
 
 // ServerStats hold various statistics that we will periodically send out.
@@ -377,17 +426,21 @@ RESET:
 		case <-sendq.ch:
 			msgs := sendq.pop()
 			for _, pm := range msgs {
-				if pm.si != nil {
-					pm.si.Name = servername
-					pm.si.Domain = domain
-					pm.si.Host = host
-					pm.si.Cluster = cluster
-					pm.si.ID = id
-					pm.si.Seq = atomic.AddUint64(seqp, 1)
-					pm.si.Version = VERSION
-					pm.si.Time = time.Now().UTC()
-					pm.si.JetStream = js
-					pm.si.Tags = tags
+				if si := pm.si; si != nil {
+					si.Name = servername
+					si.Domain = domain
+					si.Host = host
+					si.Cluster = cluster
+					si.ID = id
+					si.Seq = atomic.AddUint64(seqp, 1)
+					si.Version = VERSION
+					si.Time = time.Now().UTC()
+					si.Tags = tags
+					if js {
+						// New capability based flags.
+						si.SetJetStreamEnabled()
+						si.SetBinaryStreamSnapshot()
+					}
 				}
 				var b []byte
 				if pm.msg != nil {
@@ -542,6 +595,23 @@ func (s *Server) sendInternalAccountMsgWithReply(a *Account, subject, reply stri
 	return nil
 }
 
+// Send system style message to an account scope.
+func (s *Server) sendInternalAccountSysMsg(a *Account, subj string, si *ServerInfo, msg interface{}) {
+	s.mu.RLock()
+	if s.sys == nil || s.sys.sendq == nil || a == nil {
+		s.mu.RUnlock()
+		return
+	}
+	sendq := s.sys.sendq
+	s.mu.RUnlock()
+
+	a.mu.Lock()
+	c := a.internalClient()
+	a.mu.Unlock()
+
+	sendq.push(newPubMsg(c, subj, _EMPTY_, si, nil, msg, noCompression, false, false))
+}
+
 // This will queue up a message to be sent.
 // Lock should not be held.
 func (s *Server) sendInternalMsgLocked(subj, rply string, si *ServerInfo, msg interface{}) {
@@ -654,11 +724,13 @@ func routeStat(r *client) *RouteStat {
 		return nil
 	}
 	r.mu.Lock()
+	// Note: *client.out[Msgs|Bytes] are not set using atomics,
+	// unlike in[Msgs|Bytes].
 	rs := &RouteStat{
 		ID: r.cid,
 		Sent: DataStats{
-			Msgs:  atomic.LoadInt64(&r.outMsgs),
-			Bytes: atomic.LoadInt64(&r.outBytes),
+			Msgs:  r.outMsgs,
+			Bytes: r.outBytes,
 		},
 		Received: DataStats{
 			Msgs:  atomic.LoadInt64(&r.inMsgs),
@@ -715,9 +787,9 @@ func (s *Server) sendStatsz(subj string) {
 	m.Stats.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
 	m.Stats.NumSubs = s.numSubscriptions()
 	// Routes
-	for _, r := range s.routes {
+	s.forEachRoute(func(r *client) {
 		m.Stats.Routes = append(m.Stats.Routes, routeStat(r))
-	}
+	})
 	// Gateways
 	if s.gateway.enabled {
 		gw := s.gateway
@@ -726,9 +798,11 @@ func (s *Server) sendStatsz(subj string) {
 			gs := &GatewayStat{Name: name}
 			c.mu.Lock()
 			gs.ID = c.cid
+			// Note that *client.out[Msgs|Bytes] are not set using atomic,
+			// unlike the in[Msgs|bytes].
 			gs.Sent = DataStats{
-				Msgs:  atomic.LoadInt64(&c.outMsgs),
-				Bytes: atomic.LoadInt64(&c.outBytes),
+				Msgs:  c.outMsgs,
+				Bytes: c.outBytes,
 			}
 			c.mu.Unlock()
 			// Gather matching inbound connections
@@ -948,6 +1022,7 @@ func (s *Server) initEventTracking() {
 		s.Errorf("Error setting up internal tracking: %v", err)
 	}
 	monSrvc := map[string]sysMsgHandler{
+		"IDZ":    s.idzReq,
 		"STATSZ": s.statszReq,
 		"VARZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &VarzEventOptions{}
@@ -984,6 +1059,10 @@ func (s *Server) initEventTracking() {
 		"HEALTHZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &HealthzEventOptions{}
 			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.healthz(&optz.HealthzOptions), nil })
+		},
+		"PROFILEZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
+			optz := &ProfilezEventOptions{}
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.profilez(&optz.ProfilezOptions), nil })
 		},
 	}
 	for name, req := range monSrvc {
@@ -1089,6 +1168,13 @@ func (s *Server) initEventTracking() {
 		}
 	}
 
+	// User info.
+	// TODO(dlc) - Can be internal and not forwarded since bound server for the client connection
+	// is only one that will answer. This breaks tests since we still forward on remote server connect.
+	if _, err := s.sysSubscribe(fmt.Sprintf(userDirectReqSubj, "*"), s.userInfoReq); err != nil {
+		s.Errorf("Error setting up internal tracking: %v", err)
+	}
+
 	// For now only the STATZ subject has an account specific ping equivalent.
 	if _, err := s.sysSubscribe(fmt.Sprintf(accPingReqSubj, "STATZ"),
 		s.noInlineCallback(func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
@@ -1121,6 +1207,40 @@ func (s *Server) initEventTracking() {
 	if _, err := s.sysSubscribeInternal(accSubsSubj, s.noInlineCallback(s.debugSubscribers)); err != nil {
 		s.Errorf("Error setting up internal debug service for subscribers: %v", err)
 	}
+}
+
+// UserInfo returns basic information to a user about bound account and user permissions.
+// For account information they will need to ping that separately, and this allows security
+// controls on each subsystem if desired, e.g. account info, jetstream account info, etc.
+type UserInfo struct {
+	UserID      string        `json:"user"`
+	Account     string        `json:"account"`
+	Permissions *Permissions  `json:"permissions,omitempty"`
+	Expires     time.Duration `json:"expires,omitempty"`
+}
+
+// Process a user info request.
+func (s *Server) userInfoReq(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
+	if !s.EventsEnabled() || reply == _EMPTY_ {
+		return
+	}
+
+	response := &ServerAPIResponse{Server: &ServerInfo{}}
+
+	ci, _, _, _, err := s.getRequestInfo(c, msg)
+	if err != nil {
+		response.Error = &ApiError{Code: http.StatusBadRequest}
+		s.sendInternalResponse(reply, response)
+		return
+	}
+
+	response.Data = &UserInfo{
+		UserID:      ci.User,
+		Account:     ci.Account,
+		Permissions: c.publicPermissions(),
+		Expires:     c.claimExpiration(),
+	}
+	s.sendInternalResponse(reply, response)
 }
 
 // register existing accounts with any system exports.
@@ -1174,6 +1294,20 @@ func (s *Server) addSystemAccountExports(sacc *Account) {
 		if err := sacc.AddServiceExport(accSubsSubj, nil); err != nil {
 			s.Errorf("Error adding system service export for %q: %v", accSubsSubj, err)
 		}
+	}
+
+	// User info export.
+	userInfoSubj := fmt.Sprintf(userDirectReqSubj, "*")
+	if !sacc.hasServiceExportMatching(userInfoSubj) {
+		if err := sacc.AddServiceExport(userInfoSubj, nil); err != nil {
+			s.Errorf("Error adding system service export for %q: %v", userInfoSubj, err)
+		}
+		mappedSubj := fmt.Sprintf(userDirectReqSubj, sacc.GetName())
+		if err := sacc.AddServiceImport(sacc, userDirectInfoSubj, mappedSubj); err != nil {
+			s.Errorf("Error setting up system service import %s: %v", mappedSubj, err)
+		}
+		// Make sure to share details.
+		sacc.setServiceImportSharing(sacc, mappedSubj, false, true)
 	}
 
 	// Register any accounts that existed prior.
@@ -1323,7 +1457,9 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 		si.Tags,
 		cfg,
 		stats,
-		false, si.JetStream,
+		false,
+		si.JetStreamEnabled(),
+		si.BinaryStreamSnapshot(),
 	})
 }
 
@@ -1359,7 +1495,19 @@ func (s *Server) processNewServer(si *ServerInfo) {
 		node := getHash(si.Name)
 		// Only update if non-existent
 		if _, ok := s.nodeToInfo.Load(node); !ok {
-			s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Version, si.Cluster, si.Domain, si.ID, si.Tags, nil, nil, false, si.JetStream})
+			s.nodeToInfo.Store(node, nodeInfo{
+				si.Name,
+				si.Version,
+				si.Cluster,
+				si.Domain,
+				si.ID,
+				si.Tags,
+				nil,
+				nil,
+				false,
+				si.JetStreamEnabled(),
+				si.BinaryStreamSnapshot(),
+			})
 		}
 	}
 	// Announce ourselves..
@@ -1557,6 +1705,12 @@ type HealthzEventOptions struct {
 	EventFilterOptions
 }
 
+// In the context of system events, ProfilezEventOptions are options passed to Profilez
+type ProfilezEventOptions struct {
+	ProfilezOptions
+	EventFilterOptions
+}
+
 // returns true if the request does NOT apply to this server and can be ignored.
 // DO NOT hold the server lock when
 func (s *Server) filterRequest(fOpts *EventFilterOptions) bool {
@@ -1639,6 +1793,19 @@ func (s *Server) statszReq(sub *subscription, c *client, _ *Account, subject, re
 		}
 	}
 	s.sendStatsz(reply)
+}
+
+// idzReq is for a request for basic static server info.
+// Try to not hold the write lock or dynamically create data.
+func (s *Server) idzReq(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	id := &ServerID{
+		Name: s.info.Name,
+		Host: s.info.Host,
+		ID:   s.info.ID,
+	}
+	s.sendInternalMsg(reply, _EMPTY_, nil, &id)
 }
 
 var errSkipZreq = errors.New("filtered response")
@@ -1766,6 +1933,12 @@ func (s *Server) registerSystemImports(a *Account) {
 	importSrvc(fmt.Sprintf(accPingReqSubj, "CONNZ"), mappedConnzSubj)
 	importSrvc(fmt.Sprintf(serverPingReqSubj, "CONNZ"), mappedConnzSubj)
 	importSrvc(fmt.Sprintf(accPingReqSubj, "STATZ"), fmt.Sprintf(accDirectReqSubj, a.Name, "STATZ"))
+
+	// This is for user's looking up their own info.
+	mappedSubject := fmt.Sprintf(userDirectReqSubj, a.Name)
+	importSrvc(userDirectInfoSubj, mappedSubject)
+	// Make sure to share details.
+	a.setServiceImportSharing(sacc, mappedSubject, false, true)
 }
 
 // Setup tracking for this account. This allows us to track global account activity.
@@ -1858,6 +2031,7 @@ func (a *Account) statz() *AccountStat {
 		Conns:      localConns,
 		LeafNodes:  leafConns,
 		TotalConns: localConns + leafConns,
+		NumSubs:    a.sl.Count(),
 		Received: DataStats{
 			Msgs:  atomic.LoadInt64(&a.inMsgs),
 			Bytes: atomic.LoadInt64(&a.inBytes)},
@@ -1870,10 +2044,11 @@ func (a *Account) statz() *AccountStat {
 
 // accConnsUpdate is called whenever there is a change to the account's
 // number of active connections, or during a heartbeat.
+// We will not send for $G.
 func (s *Server) accConnsUpdate(a *Account) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.eventsEnabled() || a == nil {
+	if !s.eventsEnabled() || a == nil || a == s.gacc {
 		return
 	}
 	s.sendAccConnsUpdate(a, fmt.Sprintf(accConnsEventSubjOld, a.Name), fmt.Sprintf(accConnsEventSubjNew, a.Name))
@@ -1995,6 +2170,7 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 	s.sendInternalMsgLocked(subj, _EMPTY_, &m.Server, &m)
 }
 
+// This is the system level event sent to the system account for operators.
 func (s *Server) sendAuthErrorEvent(c *client) {
 	s.mu.Lock()
 	if !s.eventsEnabled() {
@@ -2047,6 +2223,61 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 	subj := fmt.Sprintf(authErrorEventSubj, s.info.ID)
 	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
 	s.mu.Unlock()
+}
+
+// This is the account level event sent to the origin account for account owners.
+func (s *Server) sendAccountAuthErrorEvent(c *client, acc *Account, reason string) {
+	if acc == nil {
+		return
+	}
+	s.mu.Lock()
+	if !s.eventsEnabled() {
+		s.mu.Unlock()
+		return
+	}
+	eid := s.nextEventID()
+	s.mu.Unlock()
+
+	now := time.Now().UTC()
+	c.mu.Lock()
+	m := DisconnectEventMsg{
+		TypedEvent: TypedEvent{
+			Type: DisconnectEventMsgType,
+			ID:   eid,
+			Time: now,
+		},
+		Client: ClientInfo{
+			Start:      &c.start,
+			Stop:       &now,
+			Host:       c.host,
+			ID:         c.cid,
+			Account:    acc.Name,
+			User:       c.getRawAuthUser(),
+			Name:       c.opts.Name,
+			Lang:       c.opts.Lang,
+			Version:    c.opts.Version,
+			RTT:        c.getRTT(),
+			Jwt:        c.opts.JWT,
+			IssuerKey:  issuerForClient(c),
+			Tags:       c.tags,
+			NameTag:    c.nameTag,
+			Kind:       c.kindString(),
+			ClientType: c.clientTypeString(),
+			MQTTClient: c.getMQTTClientID(),
+		},
+		Sent: DataStats{
+			Msgs:  c.inMsgs,
+			Bytes: c.inBytes,
+		},
+		Received: DataStats{
+			Msgs:  c.outMsgs,
+			Bytes: c.outBytes,
+		},
+		Reason: reason,
+	}
+	c.mu.Unlock()
+
+	s.sendInternalAccountSysMsg(acc, authErrorAccountEventSubj, &m.Server, &m)
 }
 
 // Internal message callback.
@@ -2187,6 +2418,7 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, _ *Account, s
 		si.m1 = &m2
 	}
 	si.acc.mu.Unlock()
+
 	if m1 == nil {
 		return
 	}
